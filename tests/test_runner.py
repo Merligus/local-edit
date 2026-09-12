@@ -15,7 +15,6 @@ from local_edit.engine import hardware as hw                       # noqa: E402
 from local_edit.engine import progress, prompt as P, runner, server  # noqa: E402
 
 KLEIN = cat.get("flux2-klein-4b-q4")
-PM = cat.get("sdxl-photomaker")
 
 
 def replay(lines, job=None):
@@ -82,7 +81,9 @@ def test_source_placement():
           == ["photo.png", "face.jpg"],
           "an edit model sees the image being edited as reference 1")
 
-    gen = runner.Job(recipe=PM, source=Path("photo.png"), references=refs)
+    import dataclasses
+    generative = dataclasses.replace(KLEIN, id="gen", source_as_ref=False)
+    gen = runner.Job(recipe=generative, source=Path("photo.png"), references=refs)
     check([r.path.name for r in gen.all_references()] == ["face.jpg"],
           "a generative model does not — its source is an init image, and "
           "counting it as a reference would shift every number in the prompt")

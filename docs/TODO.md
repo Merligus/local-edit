@@ -2,29 +2,40 @@
 
 Roughly in order of how much they would improve the app.
 
-0. **Bring back an IP-Adapter tier.** There was one — SD 1.5 plus
-   `ip-adapter-plus-face_sd15` — and it was removed because sd.cpp could not
-   load a CLIP-ViT-H encoder for it on this build.
+0. **Bring back the face/adapter tiers.** Two were written, downloaded and
+   removed again — SD 1.5 + IP-Adapter, and SDXL + PhotoMaker. Both fail the
+   same way, and it is an **engine regression, not a missing download**.
 
-   Both published candidates (`h94/IP-Adapter::models/image_encoder/
-   model.safetensors` and ComfyUI's `clip_vision_h.safetensors`) use
-   HuggingFace's `vision_model.*` naming with the upstream `pre_layrnorm`
-   typo. `src/name_conversion.cpp` has a `cond_model_name_map` that rewrites
-   that spelling, but it is keyed on `transformer.vision_model.pre_layrnorm.*`
-   and by the time it runs the `clip_vision.` prefix has already become
-   `cond_stage_model.transformer.`, so it never matches:
+   Anything that carries a CLIP vision tower is refused by
+   `master-859-7f410a3`. IP-Adapter asks for
+   `cond_stage_model.transformer.vision_model.…`; PhotoMaker asks for
+   `pmid.vision_model.…`; neither matches what the published weights contain,
+   and all three candidate files (h94's image encoder, ComfyUI's
+   `clip_vision_h`, PhotoMaker v1 and v2) are refused.
 
-       CLIP vision tensor 'cond_stage_model.transformer.vision_model.
-       pre_layernorm.weight' not in model metadata
-       model metadata validation failed
+   The proof that it is a regression: **PhotoMaker v1 loads on
+   `master-485-4ccce02` (January 2026)** —
 
-   Correcting the two names in the file makes it worse, not better — the file
-   is then taken for an already-converted one and every tensor goes missing.
-   So this is not a matter of finding the right download. Worth an upstream
-   issue; the fix is one `find` on the unprefixed name. Everything else for the
-   tier is still here: the `clip_vision` and `ip_adapter` roles, the
-   `--ip-adapter-image` plumbing through both engines, and their tests. Adding
-   the recipe back is one catalog entry.
+       loading stacked ID embedding (PHOTOMAKER) model file from photomaker-v1
+       Photomaker ID Stacking, taking 36485 ms
+       PHOTOMAKER: start_merge_step: 0
+
+   — and only then runs out of VRAM, because that build predates the segmented
+   execution a 4 GB card needs for SDXL. So on this machine the feature is
+   unavailable either way: the new engine cannot load it, and the old engine
+   cannot run SDXL. On a 12 GB card the January build would work today, and
+   `engine_path` in settings.json is how to point at one.
+
+   Worth an upstream issue. For IP-Adapter the fix looks like one lookup:
+   `name_conversion.cpp`'s `cond_model_name_map` is keyed on
+   `transformer.vision_model.pre_layrnorm.*`, but by the time it runs the
+   `clip_vision.` prefix has already become `cond_stage_model.transformer.`.
+
+   Everything else for both tiers is still here and still tested: the
+   `clip_vision` and `ip_adapter` roles, `--ip-adapter-image` and
+   `--pm-id-images-dir` through both engines, the CLI execution mode, and the
+   PhotoMaker trigger-word handling in `prompt.py`. Each tier is one catalog
+   entry away from returning.
 
 1. **Live preview during sampling.** The engine has `--preview tae` and
    `--preview-interval`, which write a cheap decode of the current latent every

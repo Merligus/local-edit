@@ -90,9 +90,15 @@ def test_reference_handling():
         if r.uses_ip_adapter():
             check(r.has("clip_vision"),
                   f"{r.id} ships the CLIP-vision encoder --ip-adapter requires")
-    check(cat.get("sdxl-photomaker").engine == cat.ENGINE_CLI,
-          "PhotoMaker runs one-shot — the server cannot set --pm-id-images-dir "
-          "per request")
+    # No recipe uses ENGINE_CLI today — the PhotoMaker tier that needed it was
+    # removed because the engine cannot load its weights (see catalog.py) — but
+    # the distinction still has to mean something, because the tier returns as
+    # soon as that regression is fixed.
+    check(cat.ENGINE_CLI != cat.ENGINE_SERVER,
+          "the two engine modes are distinct")
+    check(all(r.engine in (cat.ENGINE_CLI, cat.ENGINE_SERVER)
+              for r in cat.RECIPES),
+          "and every recipe names one of them")
 
 
 def test_licences_are_stated():

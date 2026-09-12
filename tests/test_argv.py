@@ -19,7 +19,6 @@ EXE = Path("/opt/sd/sd-cli")
 MODELS = Path("/models")
 KLEIN = cat.get("flux2-klein-4b-q4")
 KONTEXT = cat.get("kontext-q3")
-PM = cat.get("sdxl-photomaker")
 
 
 def argv_for(recipe, **kw):
@@ -69,13 +68,18 @@ def test_edit_models_do_not_get_an_init_image():
     print("\nedit models take the image as a reference, not as an init image")
     # Passing an edit model --init-img produces a plausible picture that ignores
     # the instruction, which reads as a bad model rather than a wiring mistake.
-    check(KLEIN.source_as_ref and KONTEXT.source_as_ref,
-          "FLUX.2 and Kontext are edit models")
-    check(not PM.source_as_ref,
-          "SDXL is generative, and re-noises an init image instead")
-    argv = argv_for(PM, init_image=Path("src.png"))
+    check(all(r.source_as_ref for r in cat.RECIPES),
+          "every recipe in the catalog today is an edit model, so every source "
+          "image travels as reference 1")
+    # The generative wiring is still reachable and still tested, because the
+    # recipes that need it are one catalog entry away from returning.
+    import dataclasses
+    gen = dataclasses.replace(KLEIN, id="gen", source_as_ref=False)
+    argv = argv_for(gen, init_image=Path("src.png"))
     check("-i" in argv and "--strength" in argv,
-          "a generative model gets -i and a denoising strength")
+          "a generative recipe would get -i and a denoising strength")
+    check("-i" not in argv_for(KLEIN, ref_images=(Path("a.png"),)),
+          "an edit model never gets an init image")
 
 
 def test_memory_flags_and_flash_attention():
@@ -109,11 +113,16 @@ def test_sampling_params():
 
 def test_photomaker():
     print("\nPhotoMaker's identity directory")
-    argv = argv_for(PM, pm_id_dir=Path("/tmp/ids"))
+    # No recipe uses this today — the engine cannot load PhotoMaker's weights,
+    # see catalog.py — but the wiring is kept and kept tested, because the
+    # failure is an engine regression and the tier returns when it is fixed.
+    import dataclasses
+    pm = dataclasses.replace(KLEIN, id="pm", engine=cat.ENGINE_CLI)
+    argv = argv_for(pm, pm_id_dir=Path("/tmp/ids"))
     check("--pm-id-images-dir" in argv, "the id directory is passed")
-    check(PM.engine == cat.ENGINE_CLI,
-          "which is why PhotoMaker is a CLI recipe: the flag is a directory "
-          "path fixed at server startup, not something a request can carry")
+    check(cat.ENGINE_CLI != cat.ENGINE_SERVER,
+          "and a CLI recipe exists as a concept: --pm-id-images-dir is a "
+          "directory fixed at server startup, not something a request can carry")
 
 
 def test_server_body_matches():

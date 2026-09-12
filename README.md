@@ -43,11 +43,13 @@ the model's `--increase-ref-index` actually does.
 3.5 GB to 34 GB, and every entry is graded against the GPU you actually have:
 
 ```
-ID                        SIZE STATE        ON THIS MACHINE            EST @768
-flux2-klein-4b-q4         5.3G ready        offloads to RAM            6 min
-kontext-q3                8.1G 8.1 GB to get streams from disk          4.3 h
-qwen-edit-2509-q2        13.4G 13.4 GB to get streams from disk          9.8 h
-flux2-dev-q4             34.5G 34.1 GB to get needs 34 GB free, 29 GB left
+ID                        SIZE STATE          ON THIS MACHINE                EST @768
+flux2-klein-4b-q4         5.3G ready          offloads to RAM                6 min
+flux2-klein-4b-q8         8.9G 8.6 GB to get  streams from disk              17 min
+kontext-q3                8.1G 8.1 GB to get  streams from disk              4.3 h
+flux2-klein-9b-q4        11.0G 10.6 GB to get streams from disk              34 min
+qwen-edit-2509-q2        13.4G 13.4 GB to get streams from disk              9.8 h
+flux2-dev-q4             34.5G 34.1 GB to get needs 34 GB free, 29 GB left   6.6 h
 ```
 
 Models too big for the current machine are **shown, not hidden**, with what they
@@ -115,7 +117,6 @@ python3 -m local_edit --install # add it to the application menu
 | **`flux2-klein-4b-q4`** | **the default.** Four steps, fits a 4 GB card | 6 | 4 | 5.3 GB |
 | `flux2-klein-4b-q8` | the same model, barely any quantisation loss | 6 | 4 | 8.9 GB |
 | `kontext-q3` | the best instruction editor at this size | 3 | 24 | 8.1 GB |
-| `sdxl-photomaker` | face identity from several photos of one person | 4 | 30 | 9.1 GB |
 | `flux2-klein-9b-q4` | Klein's bigger sibling, much better adherence | 6 | 4 | 11.0 GB |
 | `qwen-edit-2509-q2` | built for person + product + scene composition | 3 | 20 | 13.4 GB |
 | `flux2-dev-q4` | the ceiling, behind a 24 B language model | 6 | 28 | 34.5 GB |
@@ -123,19 +124,28 @@ python3 -m local_edit --install # add it to the application menu
 Everything downloads on demand into `~/.local/share/local-edit/models/`, which
 is configurable — one of these does not fit on a small root partition.
 
+**Faces** come from giving an edit model a reference tagged **Face**, not from
+a dedicated identity model. There is no IP-Adapter or PhotoMaker tier: this
+engine build cannot load either, which is an upstream regression rather than a
+design choice, and docs/TODO.md has the diagnosis and the workaround. In
+practice FLUX.2 Klein and Kontext both hold a face from one reference
+reasonably well, and Qwen-Image-Edit was trained specifically for it.
+
 **What has actually been run.** `flux2-klein-4b-q4` has been run end to end on
 the development machine, through both execution paths. The rest are wired to
 the file combinations upstream's own documentation specifies, and their
 command lines and request bodies are unit-tested, but the weights have not
-been downloaded and run — that is 85 GB and several days of this GPU's time.
+been downloaded and run — that is 76 GB and several days of this GPU's time.
 
-That distinction is not pedantic, and it has already cost one tier. An SD 1.5
-+ IP-Adapter entry was written, downloaded and removed again: sd.cpp
-advertises IP-Adapter and has every flag for it, but this build cannot load
-any published CLIP-ViT-H encoder for it. Nothing offline caught that — the
-command line was correct, the files were the ones upstream names, and the byte
-counts matched. Only running it did. Treat an untried tier as likely-but-not-
-certain; `--fetch-models` followed by one generation is how you find out.
+That distinction is not pedantic, and it has already cost two tiers. An SD 1.5
++ IP-Adapter entry and an SDXL + PhotoMaker entry were both written,
+downloaded and removed: this engine build cannot load anything carrying a CLIP
+vision tower, and PhotoMaker proves it is a regression by loading fine on a
+build from January. Nothing offline caught either one — the command lines were
+right, the files were the ones upstream names, the byte counts matched, and
+the tests were green. Only running them did. Treat an untried tier as likely-
+but-not-certain; `--fetch-models` followed by one generation is how you find
+out.
 
 ---
 
