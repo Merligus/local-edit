@@ -169,6 +169,11 @@ def _vulkan_vram() -> tuple[float, float, str, bool]:
     Reads the first `DEVICE_LOCAL` heap. `budget` is Vulkan's own answer to
     "how much would you give me right now", which already accounts for the
     desktop's own allocations, so it needs no correction.
+
+    `shaderFloat16` is read here as well as from the engine, because it doubles
+    the working set and therefore changes every verdict — and on a fresh install
+    there is no engine yet to ask. Vulkan and ggml agree on this machine:
+    `shaderFloat16 = false` against the engine's `fp16: 0`.
     """
     try:
         r = subprocess.run(["vulkaninfo"], capture_output=True, text=True,
@@ -180,6 +185,8 @@ def _vulkan_vram() -> tuple[float, float, str, bool]:
     m = re.search(r"deviceName\s*=\s*(.+)", text)
     if m:
         name = m.group(1).strip()
+    m = re.search(r"\bshaderFloat16\s*=\s*(true|false)", text)
+    fp16 = m.group(1) == "true" if m else True
 
     # Walk the heaps and take the first flagged DEVICE_LOCAL. Heap 0 is not
     # reliably the device-local one on an integrated GPU.
@@ -197,7 +204,7 @@ def _vulkan_vram() -> tuple[float, float, str, bool]:
                 best = (free, total)
         if best[1]:
             break
-    return best[0], best[1], name, True
+    return best[0], best[1], name, fp16
 
 
 def _nvidia_vram() -> tuple[float, float, str]:
