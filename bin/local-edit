@@ -1,0 +1,26 @@
+#!/bin/sh
+# Launcher wrapper.
+#
+# The package is not pip-installed, so `python3 -m local_edit` only works
+# from the project directory. A .desktop Exec line has no working directory it
+# can rely on, hence this wrapper: it resolves its own location and puts the
+# project root on PYTHONPATH.
+#
+# Kept POSIX sh (not bash/fish) so it does not depend on which shell is present.
+set -eu
+
+# Resolve this script's real directory, following symlinks.
+script=$0
+while [ -L "$script" ]; do
+    target=$(readlink "$script")
+    case $target in
+        /*) script=$target ;;
+        *) script=$(dirname "$script")/$target ;;
+    esac
+done
+here=$(cd "$(dirname "$script")" && pwd -P)
+root=$(dirname "$here")
+
+PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH
+exec python3 -m local_edit "$@"

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Local Edit application icon.
+
+  Deliberately self-coloured: no `currentColor`, no `ColorScheme-*` classes. An
+  application icon is drawn by launchers, panels and task switchers on
+  backgrounds this app does not control and which do not recolour app icons, so
+  a palette-dependent icon is invisible half the time. (Toolbar icons inside the
+  app are the opposite case and are recoloured — see ui/icons.py.)
+
+  The subject is the operation: two reference cards feeding into one picture,
+  with a wand's spark over it. Same gradient as local-upscaler's icon, because
+  they are siblings and should read as a set. It has to survive 16x16, so there
+  are six shapes and no fine detail.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" width="48" height="48">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4f7cf7"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="2" y="2" width="44" height="44" rx="10" fill="url(#bg)"/>
+
+  <!-- The two references, tucked behind and to the left. -->
+  <rect x="7"  y="14" width="13" height="17" rx="2.5" fill="#ffffff" opacity="0.38"/>
+  <rect x="11" y="11" width="13" height="17" rx="2.5" fill="#ffffff" opacity="0.62"/>
+
+  <!-- The picture being made: a frame with a horizon and a sun. -->
+  <rect x="18" y="16" width="23" height="20" rx="3" fill="#ffffff"/>
+  <path d="M18 31 l6.5-6 5 4.5 5.5-6.5 6 8 v2.5 a3 3 0 0 1-3 3 H21 a3 3 0 0 1-3-3 z"
+        fill="#4f7cf7"/>
+  <circle cx="34.5" cy="21.5" r="2.6" fill="#8b5cf6"/>
+
+  <!-- The spark: the edit itself. -->
+  <path d="M13.5 34 l1.6 4.1 4.1 1.6 -4.1 1.6 -1.6 4.1 -1.6-4.1 -4.1-1.6 4.1-1.6 z"
+        fill="#ffffff"/>
+</svg>

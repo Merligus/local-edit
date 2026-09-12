@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+.directory
+
+# OS
+.DS_Store
+
+# Runtime data the app writes. All of it normally lives under XDG directories
+# (~/.local/share/local-edit, ~/.cache/local-edit), so these entries are
+# purely defensive — for anyone who runs with XDG_* pointed at the checkout.
+#
+# These MUST stay anchored with a leading slash, and this project has two traps
+# that make the rule sharper than usual:
+#
+#   * An unanchored "bin/" would also match bin/local-edit — the launcher
+#     wrapper the .desktop file execs. The repo would clone and not run. That
+#     matters more here than it did there: this project's engine is `sd-cli`
+#     plus twenty .so files, so the temptation to ignore a whole directory is
+#     correspondingly stronger.
+#   * An unanchored "models/" is the obvious thing to want ignored for the
+#     downloaded weights, and would keep matching if a source directory were
+#     ever given that name.
+#
+# The soundboard project shipped exactly this bug (commit 82e6270, "Anchor
+# runtime ignores so they stop excluding soundboard/library/") and produced a
+# repository that could not import itself. Do not repeat it.
+/models/
+/engine/
+/bin/sd-cli
+/bin/sd-server
+/bin/*.so
+/bin/*.so.*
+/work/
+/out/
+/samples/
+/tmp/
+settings.json
+*.log
+
+# Test and benchmark artifacts
+.coverage
+htmlcov/
+.pytest_cache/
