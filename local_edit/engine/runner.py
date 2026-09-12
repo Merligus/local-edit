@@ -84,6 +84,14 @@ _HINTS = (
                          "in Advanced, or check that your GPU driver is installed."),
     ("ggml_vulkan:", "The Vulkan backend failed to start. Switch the backend to "
                      "CPU in Advanced."),
+    # The sd15-ip recipe shipped the wrong CLIP-vision encoder once. The
+    # engine's own message names a tensor, which is precise and unhelpful; what
+    # the user can act on is that two files do not belong together.
+    ("not in model metadata", "The model files do not match each other. "
+                              "Re-fetch this model with --fetch-models, and if "
+                              "that does not fix it the recipe is wrong."),
+    ("metadata validation failed", "The model files do not match each other. "
+                                   "Re-fetch this model with --fetch-models."),
     ("failed to load model", "The engine could not read a weight file. Re-fetch "
                              "it with --fetch-models."),
     ("unsupported", "The engine does not support this combination of model files. "

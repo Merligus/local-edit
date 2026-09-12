@@ -2,6 +2,30 @@
 
 Roughly in order of how much they would improve the app.
 
+0. **Bring back an IP-Adapter tier.** There was one — SD 1.5 plus
+   `ip-adapter-plus-face_sd15` — and it was removed because sd.cpp could not
+   load a CLIP-ViT-H encoder for it on this build.
+
+   Both published candidates (`h94/IP-Adapter::models/image_encoder/
+   model.safetensors` and ComfyUI's `clip_vision_h.safetensors`) use
+   HuggingFace's `vision_model.*` naming with the upstream `pre_layrnorm`
+   typo. `src/name_conversion.cpp` has a `cond_model_name_map` that rewrites
+   that spelling, but it is keyed on `transformer.vision_model.pre_layrnorm.*`
+   and by the time it runs the `clip_vision.` prefix has already become
+   `cond_stage_model.transformer.`, so it never matches:
+
+       CLIP vision tensor 'cond_stage_model.transformer.vision_model.
+       pre_layernorm.weight' not in model metadata
+       model metadata validation failed
+
+   Correcting the two names in the file makes it worse, not better — the file
+   is then taken for an already-converted one and every tensor goes missing.
+   So this is not a matter of finding the right download. Worth an upstream
+   issue; the fix is one `find` on the unprefixed name. Everything else for the
+   tier is still here: the `clip_vision` and `ip_adapter` roles, the
+   `--ip-adapter-image` plumbing through both engines, and their tests. Adding
+   the recipe back is one catalog entry.
+
 1. **Live preview during sampling.** The engine has `--preview tae` and
    `--preview-interval`, which write a cheap decode of the current latent every
    N steps. On a machine where a run is minutes, watching it converge is worth

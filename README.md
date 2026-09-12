@@ -44,7 +44,6 @@ the model's `--increase-ref-index` actually does.
 
 ```
 ID                        SIZE STATE        ON THIS MACHINE            EST @768
-sd15-ip                   3.5G 3.5 GB to get offloads to RAM            81 s
 flux2-klein-4b-q4         5.3G ready        offloads to RAM            6 min
 kontext-q3                8.1G 8.1 GB to get streams from disk          4.3 h
 qwen-edit-2509-q2        13.4G 13.4 GB to get streams from disk          9.8 h
@@ -113,7 +112,6 @@ python3 -m local_edit --install # add it to the application menu
 
 | id | What it is for | Refs | Steps | Download |
 |---|---|---|---|---|
-| `sd15-ip` | fast drafts, style transfer. Not an instruction editor | 1 | 24 | 3.5 GB |
 | **`flux2-klein-4b-q4`** | **the default.** Four steps, fits a 4 GB card | 6 | 4 | 5.3 GB |
 | `flux2-klein-4b-q8` | the same model, barely any quantisation loss | 6 | 4 | 8.9 GB |
 | `kontext-q3` | the best instruction editor at this size | 3 | 24 | 8.1 GB |
@@ -124,6 +122,20 @@ python3 -m local_edit --install # add it to the application menu
 
 Everything downloads on demand into `~/.local/share/local-edit/models/`, which
 is configurable — one of these does not fit on a small root partition.
+
+**What has actually been run.** `flux2-klein-4b-q4` has been run end to end on
+the development machine, through both execution paths. The rest are wired to
+the file combinations upstream's own documentation specifies, and their
+command lines and request bodies are unit-tested, but the weights have not
+been downloaded and run — that is 85 GB and several days of this GPU's time.
+
+That distinction is not pedantic, and it has already cost one tier. An SD 1.5
++ IP-Adapter entry was written, downloaded and removed again: sd.cpp
+advertises IP-Adapter and has every flag for it, but this build cannot load
+any published CLIP-ViT-H encoder for it. Nothing offline caught that — the
+command line was correct, the files were the ones upstream names, and the byte
+counts matched. Only running it did. Treat an untried tier as likely-but-not-
+certain; `--fetch-models` followed by one generation is how you find out.
 
 ---
 

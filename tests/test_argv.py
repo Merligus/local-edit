@@ -19,7 +19,6 @@ EXE = Path("/opt/sd/sd-cli")
 MODELS = Path("/models")
 KLEIN = cat.get("flux2-klein-4b-q4")
 KONTEXT = cat.get("kontext-q3")
-SD15 = cat.get("sd15-ip")
 PM = cat.get("sdxl-photomaker")
 
 
@@ -72,9 +71,9 @@ def test_edit_models_do_not_get_an_init_image():
     # the instruction, which reads as a bad model rather than a wiring mistake.
     check(KLEIN.source_as_ref and KONTEXT.source_as_ref,
           "FLUX.2 and Kontext are edit models")
-    check(not SD15.source_as_ref and not PM.source_as_ref,
-          "SD1.5 and SDXL are generative, and re-noise an init image")
-    argv = argv_for(SD15, init_image=Path("src.png"))
+    check(not PM.source_as_ref,
+          "SDXL is generative, and re-noises an init image instead")
+    argv = argv_for(PM, init_image=Path("src.png"))
     check("-i" in argv and "--strength" in argv,
           "a generative model gets -i and a denoising strength")
 
