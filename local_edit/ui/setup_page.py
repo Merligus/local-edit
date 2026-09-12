@@ -238,7 +238,13 @@ class SetupPage(QWidget):
         sent = QHBoxLayout()
         sent.setSpacing(gu(0.5))
         caption = QLabel("Sent to the model:")
-        caption.setEnabled(False)
+        # De-emphasised with the font rather than `setEnabled(False)`, which
+        # greys it to the disabled role and makes a perfectly live caption read
+        # as a broken control.
+        caption_font = caption.font()
+        caption_font.setPointSizeF(max(6.0, caption_font.pointSizeF() * 0.92))
+        caption_font.setItalic(True)
+        caption.setFont(caption_font)
         sent.addWidget(caption)
         sent.addStretch(1)
         self._edit_composed = QToolButton()
@@ -270,7 +276,9 @@ class SetupPage(QWidget):
         for recipe in catalog.RECIPES:
             self._recipe.addItem(recipe.label, recipe.id)
         self._recipe.currentIndexChanged.connect(self._on_recipe_changed)
-        form.addRow("Model", self._recipe)
+        # No row label: the group box already says "Model", and a form row
+        # labelled the same thing reads as a mistake.
+        form.addRow(self._recipe)
 
         self._blurb = QLabel()
         self._blurb.setWordWrap(True)

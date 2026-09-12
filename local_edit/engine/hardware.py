@@ -273,6 +273,26 @@ def _probe_env() -> dict[str, str]:
     return env
 
 
+def _free_disk(path: Path) -> float:
+    """Free space on the volume `path` is (or would be) on, in GB.
+
+    Walks up to the nearest parent that exists rather than creating the
+    directory. Probing is a read, and it runs whenever the settings change — so
+    an earlier version that called `mkdir` left a stray directory behind for
+    every path the user typed while editing one.
+    """
+    candidate = path.expanduser()
+    for _ in range(64):
+        try:
+            return shutil.disk_usage(candidate).free / 1e9
+        except OSError:
+            pass
+        if candidate.parent == candidate:
+            return 0.0
+        candidate = candidate.parent
+    return 0.0
+
+
 def probe(models_dir: Path, list_devices_output: str = "") -> Hardware:
     """Measure the machine. Cheap enough to call on every settings change."""
     free, total, name, fp16 = _vulkan_vram()
@@ -283,11 +303,7 @@ def probe(models_dir: Path, list_devices_output: str = "") -> Hardware:
         fp16 = engine_fp16
 
     ram, ram_total = _meminfo()
-    try:
-        models_dir.mkdir(parents=True, exist_ok=True)
-        disk = shutil.disk_usage(models_dir).free / 1e9
-    except OSError:
-        disk = 0.0
+    disk = _free_disk(models_dir)
 
     return Hardware(vram_gb=free, vram_total_gb=total, ram_gb=ram,
                     ram_total_gb=ram_total, disk_gb=disk, gpu_name=name,

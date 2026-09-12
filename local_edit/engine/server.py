@@ -119,16 +119,26 @@ class EngineServer:
     def log_tail(self, n: int = 8) -> str:
         return self._parser.tail(n)
 
-    def set_load_tap(self, on_load: Callable[[int, int], None] | None) -> None:
-        """Route weight-loading progress to a caller, or stop routing it.
+    def set_taps(self, on_tick=None, on_load=None, on_stage=None) -> None:
+        """Point the output parser at one caller's callbacks, or at nobody.
 
-        Separate from `generate`'s `on_tick` because the two happen at different
-        times and mean different things: loading runs before the first edit (and
-        again mid-run when weights stream from disk), while ticks are sampling
-        steps. A caller that conflated them would show a bar jumping between two
-        unrelated scales.
+        **Every caller must clear these when it is done**, and `generate` does
+        it in a `finally`. The parser outlives any one edit — that is the point
+        of a warm server — but the object it reports to does not: the UI's
+        worker is `deleteLater`'d as soon as a run finishes. A callback left
+        bound to it fires on the next edit into a deleted C++ object, PySide6
+        raises `RuntimeError` inside the reader thread, and progress is dead for
+        the rest of the session.
+
+        The three are separate because they happen at different times and mean
+        different things. `on_load` counts tensors and runs before sampling (and
+        again mid-run when weights stream from disk); `on_tick` counts sampling
+        steps; `on_stage` is neither. A caller that conflated the first two
+        would show a bar jumping between two unrelated scales.
         """
+        self._parser.on_tick = on_tick
         self._parser.on_load = on_load
+        self._parser.on_stage = on_stage
 
     # -- lifecycle --------------------------------------------------------
     def ensure(self, recipe: Recipe, models_dir: Path, *,
@@ -166,6 +176,8 @@ class EngineServer:
             exe, recipe, models_dir, port=port, memory=memory, backend=backend,
             threads=threads, max_vram_gb=max_vram_gb)
 
+        # Bound only for the load-and-listen window below; `_await_ready`
+        # clears it, and `generate` installs the current run's callbacks.
         self._parser = progress.Parser(on_stage=on_stage)
         self._ended.clear()
         try:
@@ -180,7 +192,10 @@ class EngineServer:
         self._reader.start()
         self._client = client.Client("127.0.0.1", port)
         self._key = key
-        self._await_ready(recipe, is_cancelled)
+        try:
+            self._await_ready(recipe, is_cancelled)
+        finally:
+            self.set_taps()
         self._last_used = time.monotonic()
         return self._client
 
@@ -222,7 +237,16 @@ class EngineServer:
                 chunk = proc.stdout.read1(8192)
                 if not chunk:
                     break
-                self._parser.feed(chunk.decode("utf-8", "replace"))
+                try:
+                    self._parser.feed(chunk.decode("utf-8", "replace"))
+                except Exception:                          # noqa: BLE001
+                    # Defence in depth around `set_taps`. A callback that raises
+                    # — a Qt object destroyed between chunks is the realistic
+                    # case — must not end this thread, because the process would
+                    # keep running with nothing reading its output and every
+                    # later edit would show a frozen bar. Drop the chunk, keep
+                    # pumping.
+                    pass
         except (OSError, ValueError):
             pass
         finally:
@@ -272,10 +296,12 @@ class EngineServer:
     # -- running one edit -------------------------------------------------
     def generate(self, api: client.Client, request: client.ImgGenRequest, *,
                  on_tick: Callable[[progress.Tick], None] | None = None,
+                 on_load: Callable[[int, int], None] | None = None,
+                 on_stage: Callable[[str, str], None] | None = None,
                  is_cancelled: Callable[[], bool] | None = None) -> list[bytes]:
         """Submit one edit and wait for it, reporting progress from the tap."""
         self._parser.reset()
-        self._parser.on_tick = on_tick
+        self.set_taps(on_tick, on_load, on_stage)
         try:
             job_id = api.submit(request)
             while True:
@@ -297,5 +323,7 @@ class EngineServer:
                     raise client.ApiError("cancelled")
                 time.sleep(JOB_POLL_S)
         finally:
-            self._parser.on_tick = None
+            # Not optional — see `set_taps`. The caller that owns these
+            # callbacks is about to be destroyed, and the parser is not.
+            self.set_taps()
             self._last_used = time.monotonic()

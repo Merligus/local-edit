@@ -95,6 +95,20 @@ def test_memory_mode_overrides_the_verdict():
     check("--params-backend" in s.memory_flags(v), "'stream from disk' does")
 
 
+def test_throughput_prefers_the_engine():
+    print("\nthroughput takes the engine's own rate over the wall clock")
+    # Real ticks from one run: 136.7, 193.1, 249.9, 249.9 seconds, with the
+    # engine reporting 56 s/it. Timing it from outside gives 28.3 or 37.7
+    # depending on the divisor; neither is right.
+    check(runner.throughput(56.0, 113.2, 4) == 56.0,
+          "the engine's figure wins — it is measured inside the sampler loop "
+          "and excludes loading, encoding and decoding for free")
+    check(abs(runner.throughput(0, 113.2, 3) - 37.73) < 0.01,
+          "the wall clock is only the fallback, for a run that reported no rate")
+    check(runner.throughput(0, 0, 0) > 0,
+          "and a degenerate run still returns something positive")
+
+
 def test_estimates_use_the_measurement():
     print("\nan estimate prefers a measurement to a prior")
     klein = cat.get("flux2-klein-4b-q4")
@@ -171,6 +185,7 @@ if __name__ == "__main__":
         test_round_trip, test_unknown_keys_are_preserved,
         test_garbage_is_clamped_not_rejected, test_calibration_keys,
         test_calibration_blends, test_memory_mode_overrides_the_verdict,
+        test_throughput_prefers_the_engine,
         test_estimates_use_the_measurement, test_mpx_buckets,
         test_auto_size_never_speculates, test_auto_size_follows_the_measurement,
         test_auto_size_respects_what_fits))

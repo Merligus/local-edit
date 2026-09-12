@@ -260,18 +260,33 @@ def estimate_seconds(recipe: Recipe, width: int, height: int, steps: int,
     return (recipe.load_s if include_load else 0.0) + rate * steps
 
 
-def throughput(elapsed_sampling: float, steps: int) -> float:
-    """Seconds per sampling step.
+def throughput(engine_rate: float, elapsed: float, steps_elapsed: int) -> float:
+    """Seconds per sampling step, preferring the engine's own figure.
 
-    Sampling is timed on its own rather than dividing total elapsed by steps,
-    which is the mistake local-upscaler's `throughput` docstring describes at
-    length. Here the fixed costs are even more lopsided: this machine spends
-    11 s loading weights and 19 s encoding the prompt before the first step, so
-    a naive `elapsed / steps` for a four-step Klein run would be almost twice
-    the real per-step cost — and would then predict nearly double for a 24-step
-    Kontext run, where those same fixed costs are amortised six times over.
+    Every progress line the engine prints carries a rate — `4/4 - 22.34s/it` —
+    which `progress.Parser` already extracts. That number is measured inside the
+    sampler loop, so it excludes weight loading, text encoding and VAE decode
+    for free. Nothing this app can time from outside will beat it, and two
+    attempts at timing it from outside both came out wrong:
+
+    * Dividing total elapsed by steps counts the fixed costs as sampling. On
+      this machine that is 11 s of weight loading and 19 s of text encoding
+      before the first step — nearly double the real rate for a four-step Klein
+      run, and it would then predict nearly double for a 24-step Kontext run
+      where the same costs are amortised six times over.
+    * Timing between the first and last tick is better but still wrong, because
+      the clock can only start when the first tick *arrives* — so step 1 falls
+      outside the window — and because the engine sometimes emits the last two
+      ticks together. A real run whose ticks landed at 136.7, 193.1, 249.9 and
+      249.9 gives 28.3 s/step by one reckoning and 37.7 by the other, against an
+      engine-reported 56.
+
+    So the wall-clock path is only a fallback for a run that produced no
+    parseable rate at all.
     """
-    return max(0.01, elapsed_sampling) / max(1, steps)
+    if engine_rate and engine_rate > 0:
+        return engine_rate
+    return max(0.01, elapsed) / max(1, steps_elapsed)
 
 
 class Runner:
@@ -290,6 +305,13 @@ class Runner:
         self._sampling_started = 0.0
         self._sampling_elapsed = 0.0
         self._steps_seen = 0
+        #: The step number the clock started on, and the last one seen. Their
+        #: difference is how many steps the measured interval actually covers.
+        #: Only used when the engine reported no rate of its own.
+        self._first_step = 0
+        self._last_step = 0
+        #: The engine's own seconds-per-step, from the last progress line.
+        self._engine_rate = 0.0
         self._loading = False
 
     # -- control ----------------------------------------------------------
@@ -347,9 +369,13 @@ class Runner:
     def _engine_tick(self, tick: progress.Tick) -> None:
         if not self._sampling_started:
             self._sampling_started = time.monotonic()
+            self._first_step = tick.step
             self._loading = False
             self._stage(STAGE_GENERATE, self._stage_text(STAGE_GENERATE))
         self._steps_seen = tick.steps
+        self._last_step = max(self._last_step, tick.step)
+        if tick.sec_per_step > 0:
+            self._engine_rate = tick.sec_per_step
         self._progress(tick.step, tick.steps)
 
     def _engine_load(self, done: int, total: int) -> None:
@@ -395,12 +421,15 @@ class Runner:
         sampling = self._sampling_elapsed or (
             time.monotonic() - self._sampling_started if self._sampling_started
             else 0.0)
+        # Steps *inside* the timed window — see `throughput`. Falls back to the
+        # full count when there were not two ticks to measure between, which is
+        # the best available answer for a one-step run.
+        measured_steps = max(1, self._last_step - self._first_step)
         return Result(
             image=image, prompt=composed, seed=seed,
             steps=self._steps_seen or job.effective_steps(),
             elapsed=elapsed,
-            sec_per_step=throughput(sampling, self._steps_seen
-                                    or job.effective_steps()),
+            sec_per_step=throughput(self._engine_rate, sampling, measured_steps),
             size=image.size, notes=tuple(self._notes),
             log_tail=self.engine.log_tail())
 
@@ -466,7 +495,6 @@ class Runner:
                 raise Cancelled() from e
             raise EditError(_explain(f"{e}\n{self.engine.log_tail()}")) from e
         self._check()
-        self.engine.set_load_tap(self._engine_load)
 
         init_b64 = ""
         ref_b64: list[str] = []
@@ -493,6 +521,7 @@ class Runner:
         try:
             images = self.engine.generate(
                 api, request, on_tick=self._engine_tick,
+                on_load=self._engine_load, on_stage=self._engine_stage,
                 is_cancelled=lambda: self._cancelled)
         except client.ApiError as e:
             if self._cancelled or "cancelled" in str(e).lower():
@@ -500,8 +529,6 @@ class Runner:
             raise EditError(_explain(f"{e}\n{self.engine.log_tail()}")) from e
         except server.ServerError as e:
             raise EditError(_explain(f"{e}\n{self.engine.log_tail()}")) from e
-        finally:
-            self.engine.set_load_tap(None)
 
         if not images:
             raise EditError("The engine finished but returned no image.\n"

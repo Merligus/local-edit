@@ -137,28 +137,36 @@ class ResultPage(QWidget):
         return self._strip
 
     def _build_footer(self):
-        footer = QHBoxLayout()
+        # The summary gets its own row. Sharing one with three buttons left it
+        # about a third of the width, so "4 steps in 4 min" wrapped after
+        # "4" — and any note about a trimmed reference list, which is the thing
+        # most worth reading here, wrapped worse.
+        footer = QVBoxLayout()
+        footer.setSpacing(me.metrics.gu(0.25))
         self._summary = QLabel()
         self._summary.setWordWrap(True)
-        footer.addWidget(self._summary, 1)
+        footer.addWidget(self._summary)
 
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
         self._continue = QPushButton("Continue Editing This")
         self._continue.setToolTip(
             "Use this result as the image to edit, keeping the prompt and "
             "references.")
         self._continue.clicked.connect(self._on_continue)
-        footer.addWidget(self._continue)
+        buttons.addWidget(self._continue)
 
         self._back = QPushButton("Edit Another")
         self._back.setToolTip("Back to the first screen, keeping everything "
                               "as it was.")
         self._back.clicked.connect(self.back_requested.emit)
-        footer.addWidget(self._back)
+        buttons.addWidget(self._back)
 
         self._save = QPushButton("Save Image…")
         self._save.setDefault(True)
         self._save.clicked.connect(self._save_as)
-        footer.addWidget(self._save)
+        buttons.addWidget(self._save)
+        footer.addLayout(buttons)
         return footer
 
     # -- content ----------------------------------------------------------
