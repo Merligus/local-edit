@@ -312,7 +312,6 @@ class Runner:
         self._last_step = 0
         #: The engine's own seconds-per-step, from the last progress line.
         self._engine_rate = 0.0
-        self._loading = False
         self._last_stage: tuple[str, str] = ("", "")
 
     # -- control ----------------------------------------------------------
@@ -362,13 +361,19 @@ class Runner:
         if key is None:
             return
         if key == STAGE_GENERATE:
-            # Not the start of sampling — see `_engine_load`. The engine logs
-            # this before it loads the diffusion weights, so the clock that
-            # `throughput` divides by must start at the first actual step.
-            if self._loading:
-                return
-            self._sampling_started = time.monotonic()
-        elif key == STAGE_DECODE and self._sampling_started:
+            # Dropped on the floor. The engine logs "generating image" *before*
+            # it loads the diffusion weights — two minutes before, on this
+            # machine — so announcing sampling here would leave the UI claiming
+            # to generate beside a frozen bar for the whole load.
+            #
+            # An earlier version suppressed this only when a load bar had
+            # already been seen, which worked by luck: the text encoder happens
+            # to load first and happens to be large enough to print one. A
+            # recipe whose encoder loaded silently would have hit the bug. Only
+            # `_engine_tick` starts sampling now, because only a real step
+            # proves sampling started.
+            return
+        if key == STAGE_DECODE and self._sampling_started:
             self._sampling_elapsed = time.monotonic() - self._sampling_started
         self._stage(key, self._stage_text(key))
 
@@ -383,9 +388,10 @@ class Runner:
 
     def _engine_tick(self, tick: progress.Tick) -> None:
         if not self._sampling_started:
+            # The only place sampling is declared to have started. See
+            # `_engine_stage`.
             self._sampling_started = time.monotonic()
             self._first_step = tick.step
-            self._loading = False
             self._stage(STAGE_GENERATE, self._stage_text(STAGE_GENERATE))
         self._steps_seen = tick.steps
         self._last_step = max(self._last_step, tick.step)
@@ -403,16 +409,16 @@ class Runner:
         log line alone would leave the UI saying "Generating…" beside a frozen
         bar for the whole load, which reads as a hang.
 
-        So the load bar overrides the stage text until a real step arrives.
-        After that it is ignored: a disk-streamed recipe reloads segments
-        mid-run and reuses the same bar, and letting that hijack the step bar
-        would look like going backwards.
+        So the load bar owns the stage text until a real step arrives. After
+        that it is ignored: a disk-streamed recipe reloads segments mid-run and
+        reuses the same bar, and letting that hijack the step bar would look
+        like going backwards.
+
+        `_stage` deduplicates, so calling it on every load tick costs nothing.
         """
         if self._sampling_started:
             return
-        if not self._loading:
-            self._loading = True
-            self._stage(STAGE_LOAD, self._stage_text(STAGE_LOAD))
+        self._stage(STAGE_LOAD, self._stage_text(STAGE_LOAD))
         self._progress(done, total)
 
     # -- the run ----------------------------------------------------------
