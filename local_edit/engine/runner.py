@@ -313,6 +313,7 @@ class Runner:
         #: The engine's own seconds-per-step, from the last progress line.
         self._engine_rate = 0.0
         self._loading = False
+        self._last_stage: tuple[str, str] = ("", "")
 
     # -- control ----------------------------------------------------------
     def cancel(self) -> None:
@@ -334,6 +335,20 @@ class Runner:
             raise Cancelled()
 
     def _stage(self, key: str, text: str) -> None:
+        """Announce a stage, but only when something actually changed.
+
+        Two things legitimately raise the same stage: `run` sets LOAD before
+        dispatching, and the weight-loading tap sets it again when the first
+        tensor arrives. The UI deduplicates by key on its own, but `--bench`
+        prints every call, and a run that says "Loading FLUX.2 Klein 4B (Q4)…"
+        twice in a row looks like it is stuck.
+
+        Keyed on the text as well as the stage, because the download stage
+        rewrites its own label as it moves between files.
+        """
+        if (key, text) == self._last_stage:
+            return
+        self._last_stage = (key, text)
         if self._on_stage is not None:
             self._on_stage(key, text)
 

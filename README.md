@@ -138,8 +138,17 @@ FLUX.2 Klein 4B (Q4), `--offload-to-cpu`:
 | peak VRAM beyond weights | 0.49 GB | 2.76 GB |
 | outcome | fine | **out of device memory at segment 15/27** |
 
-A complete 512 × 512 edit is about **two and a half minutes**: 11 s loading
-weights, 19 s encoding the prompt, 100 s sampling, 10 s decoding.
+Whole runs at 512 × 512, measured end to end:
+
+| | |
+|---|---|
+| generate from a prompt alone | **2 min 22 s** — 11 s loading weights, 19 s encoding the prompt, 101 s sampling, 10 s decoding |
+| edit an image, one reference | **2 min 58 s** on a warm engine |
+| edit an image, two references | **4 min 22 s** |
+
+The engine stays loaded between edits, so only the first run of a session pays
+the load; a second edit on a warm engine measured 178 s against 182 s for the
+first.
 
 Two things that fall out of those numbers and are worth knowing:
 

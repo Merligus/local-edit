@@ -70,15 +70,24 @@ def list_models() -> int:
            if hw.swap_is_zram else ""))
     say(f"Disk {hw.disk_gb:.0f} GB free in {models}")
     say()
-    say(f"{'ID':<22} {'SIZE':>7} {'STATE':<12} {'ON THIS MACHINE':<26} EST @768")
+    # Every column is fixed width and every value is truncated to it. The
+    # verdict summary is the one that varies most — "fits your GPU" against
+    # "4.1 GB of your GPU is in use elsewhere" — and letting it run long pushes
+    # the estimate out of its column on exactly the rows where the estimate
+    # matters most.
+    verdict_width = 30
+    say(f"{'ID':<22} {'SIZE':>7} {'STATE':<14} "
+        f"{'ON THIS MACHINE':<{verdict_width}} EST @768")
     for recipe in catalog.RECIPES:
         pending = fetch.download_size(recipe, models)
         v = hardware.verdict(recipe, hw, 768, 768, pending)
         state = "ready" if not pending else f"{human_bytes(pending)} to get"
         seconds = runner.estimate_seconds(recipe, 768, 768, recipe.steps,
                                           grade=v.grade, references=1)
-        say(f"{recipe.id:<22} {recipe.weights_gb():>6.1f}G {state:<12} "
-            f"{v.summary:<26} {human_time(seconds)}")
+        summary = v.summary if len(v.summary) <= verdict_width else \
+            v.summary[:verdict_width - 1] + "\u2026"
+        say(f"{recipe.id:<22} {recipe.weights_gb():>6.1f}G {state:<14} "
+            f"{summary:<{verdict_width}} {human_time(seconds)}")
     say()
     say(f"default: {catalog.DEFAULT_RECIPE_ID}")
     return 0
