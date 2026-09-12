@@ -104,8 +104,35 @@ def test_licences_are_stated():
           f"non-commercial models are labelled as such ({len(nc)} of them)")
 
 
+def test_readme_agrees():
+    print("\nthe README's model table matches the catalog")
+    # Documentation that drifts from the data is worse than none: the table is
+    # how someone decides what to spend 34 GB of disk on, and nothing else in
+    # this repo would notice it going stale.
+    import re
+    from pathlib import Path
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    for r in cat.RECIPES:
+        row = re.search(rf"^\|\s*\*{{0,2}}`{re.escape(r.id)}`\*{{0,2}}\s*\|(.+)$",
+                        readme, re.M)
+        if row is None:
+            check(False, f"{r.id} appears in the README's model table")
+            continue
+        cells = [c.strip().strip("*") for c in row.group(1).split("|")]
+        refs, steps, size = cells[1], cells[2], cells[3]
+        check(refs == str(r.max_refs),
+              f"{r.id}: README says {refs} references, catalog says {r.max_refs}")
+        check(steps == str(r.steps),
+              f"{r.id}: README says {steps} steps, catalog says {r.steps}")
+        stated = float(size.replace("GB", "").strip())
+        check(abs(stated - r.weights_gb()) < 0.1,
+              f"{r.id}: README says {stated} GB, catalog sums to "
+              f"{r.weights_gb():.1f} GB")
+
+
 if __name__ == "__main__":
     raise SystemExit(run(
         test_identity, test_fully_described, test_files_are_addressable,
         test_no_filename_collisions, test_derived_sizes,
-        test_reference_handling, test_licences_are_stated))
+        test_reference_handling, test_licences_are_stated,
+        test_readme_agrees))
