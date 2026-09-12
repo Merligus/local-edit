@@ -33,7 +33,7 @@ recipe. See `runner.throughput`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 #: How a recipe is executed. The server keeps multi-gigabyte weights resident
 #: between edits, which is the difference between iterating on a prompt and
@@ -188,8 +188,6 @@ class Recipe:
     sec_per_mpx_step: float = 10.0
     #: Fixed cost of loading the weights and warming the backend.
     load_s: float = 30.0
-
-    _by_role: dict = field(default_factory=dict, init=False, repr=False, compare=False)
 
     # -- derived ---------------------------------------------------------
     def weights_bytes(self) -> int:

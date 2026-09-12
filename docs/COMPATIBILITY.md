@@ -4,7 +4,7 @@
 
 | | Why |
 |---|---|
-| Python 3.11+ | `X \| None` annotations, `match`-free but modern typing |
+| Python 3.10+ | `X \| None` annotations throughout, behind `from __future__ import annotations`. Developed and tested on 3.14 |
 | PySide6 | the entire interface |
 | Pillow | decoding what the engine returns, and validating what you open |
 | A Vulkan loader | `vulkan-icd-loader`, plus your GPU's driver |
