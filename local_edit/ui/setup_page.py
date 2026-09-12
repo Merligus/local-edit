@@ -27,8 +27,8 @@ from PySide6.QtGui import QImage, QImageReader, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
                                QFormLayout, QFrame, QGroupBox, QHBoxLayout,
                                QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-                               QSizePolicy, QSpinBox, QToolButton, QVBoxLayout,
-                               QWidget)
+                               QScrollArea, QSizePolicy, QSpinBox, QToolButton,
+                               QVBoxLayout, QWidget)
 
 from .. import settings as st
 from ..engine import binary, catalog, fetch, hardware, prompt as P, runner
@@ -102,22 +102,60 @@ class SetupPage(QWidget):
         self._hardware = hardware.Hardware()
         self._verdict: hardware.Verdict | None = None
         self._override_locked = False
+        self._note = ""
+        #: Whether `_auto_size` has moved the output size, so `_refresh` can
+        #: explain a control that changed on its own.
+        self._auto_sized = False
+        #: What the model labels were last computed for; see
+        #: `_refresh_recipe_labels`. `Hardware` is a frozen dataclass, so it
+        #: compares by value and a re-probe returning the same numbers is
+        #: correctly a no-op.
+        self._labels_key: tuple | None = None
 
         gu = me.metrics.gu
+
+        # The content scrolls; the estimate and the Generate button do not.
+        #
+        # There is more here than fits: with the Advanced group collapsed and no
+        # references, the content alone wants about 1050 px against a 640 px
+        # default window, and each reference row adds more. Letting the layout
+        # squeeze instead would compress the prompt box and the thumbnail to
+        # nothing on a small screen or a large font.
+        #
+        # Keeping the estimate and the button outside the scroll area is the
+        # point of doing it this way rather than making the whole page scroll:
+        # "About 6 min — 4 steps at 768 x 768 with 3 references" is the last
+        # thing anyone reads before committing to a six-minute wait, and it must
+        # not be the thing that scrolled off the bottom.
+        content = QWidget()
+        inner = QVBoxLayout(content)
+        inner.setContentsMargins(gu(1.5), gu(1.5), gu(1.5), gu(0.5))
+        inner.setSpacing(gu(0.75))
+        inner.addLayout(self._build_source_row())
+        inner.addWidget(self._build_references())
+        inner.addWidget(self._build_prompt())
+        inner.addWidget(self._build_model())
+        inner.addWidget(self._build_advanced())
+        inner.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidget(content)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(gu(1.5), gu(1.5), gu(1.5), gu(1.5))
-        outer.setSpacing(gu(0.75))
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(gu(0.5))
+        outer.addWidget(scroll, 1)
 
-        outer.addLayout(self._build_source_row())
-        outer.addWidget(self._build_references())
-        outer.addWidget(self._build_prompt())
-        outer.addWidget(self._build_model())
-        outer.addWidget(self._build_advanced())
-        outer.addStretch(1)
-
+        footer = QVBoxLayout()
+        footer.setContentsMargins(gu(1.5), 0, gu(1.5), gu(1.5))
+        footer.setSpacing(gu(0.5))
         self._estimate = QLabel()
         self._estimate.setWordWrap(True)
-        outer.addWidget(self._estimate)
+        footer.addWidget(self._estimate)
 
         go = QHBoxLayout()
         go.addStretch(1)
@@ -125,7 +163,8 @@ class SetupPage(QWidget):
         self._go.setDefault(True)
         self._go.clicked.connect(self.generate_requested.emit)
         go.addWidget(self._go)
-        outer.addLayout(go)
+        footer.addLayout(go)
+        outer.addLayout(footer)
 
         self.setAcceptDrops(True)
         self._load_settings()
@@ -346,6 +385,7 @@ class SetupPage(QWidget):
     def _on_advanced_changed(self, *_: object) -> None:
         s = self._settings
         s.size = self._size.currentData()
+        s.size_chosen = True          # the user has an opinion now
         s.steps = self._steps.value() or None
         s.cfg_scale = self._cfg.value() or None
         s.seed = -1 if self._randomize.isChecked() else self._seed.value()
@@ -387,13 +427,26 @@ class SetupPage(QWidget):
         self._hardware = hw
         self._refresh()
 
-    def hardware(self) -> hardware.Hardware:
-        """The last probe. The window needs it to grade a finished run."""
-        return self._hardware
+    def _auto_size(self) -> bool:
+        """Apply `settings.auto_size`, until the user has an opinion of their own.
 
-    def verdict(self) -> hardware.Verdict:
-        """How the selected recipe would run, at the selected size."""
-        return self._grade()
+        Returns True when it changed the size, so `_refresh` can say why: a
+        control that moves on its own without explanation is worse than one that
+        never moves.
+        """
+        s = self._settings
+        if s.size_chosen:
+            return False
+        best = st.auto_size(s.recipe(), self._hardware, s.calibration)
+        if best == s.size:
+            return False
+        s.size = best
+        index = self._size.findData(best)
+        if index >= 0:
+            self._size.blockSignals(True)
+            self._size.setCurrentIndex(index)
+            self._size.blockSignals(False)
+        return True
 
     def _grade(self) -> hardware.Verdict:
         s = self._settings
@@ -403,10 +456,20 @@ class SetupPage(QWidget):
         return hardware.verdict(recipe, self._hardware, width, height, pending)
 
     def _refresh_recipe_labels(self) -> None:
-        """Re-label every entry with how it would run on this machine."""
+        """Re-label every entry with how it would run on this machine.
+
+        Guarded by a key, because `_refresh` runs on every keystroke in the
+        prompt box and this loop grades eight recipes and writes eight combo
+        items. None of that depends on the prompt, and rewriting a combo box's
+        text while the user types makes it flicker.
+        """
         s = self._settings
         width, height = self.output_size()
         models = s.models_path()
+        key = (width, height, str(models), self._hardware)
+        if key == self._labels_key:
+            return
+        self._labels_key = key
         for i in range(self._recipe.count()):
             recipe = catalog.get(self._recipe.itemData(i))
             pending = fetch.download_size(recipe, models)
@@ -539,6 +602,7 @@ class SetupPage(QWidget):
     # -- the summary ------------------------------------------------------
     def _refresh(self) -> None:
         s = self._settings
+        self._auto_sized = self._auto_size() or self._auto_sized
         recipe = s.recipe()
         width, height = self.output_size()
         verdict = self._grade()
@@ -626,7 +690,10 @@ class SetupPage(QWidget):
                                                              hardware.TOO_BIG):
             bits.append("Swap on this machine is zram — compressed RAM — which "
                         "does not help with model weights.")
-        if getattr(self, "_note", ""):
+        if self._auto_sized and not s.size_chosen:
+            bits.append(f"Set to {s.size} px from the speed measured on this "
+                        f"machine — change it in Advanced.")
+        if self._note:
             bits.append(self._note)
 
         self._estimate.setText(" ".join(bits))

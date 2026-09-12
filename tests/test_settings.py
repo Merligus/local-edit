@@ -117,9 +117,60 @@ def test_mpx_buckets():
           "equal-area sizes share a bucket")
 
 
+PASCAL = hw.Hardware(vram_gb=3.66, vram_total_gb=4.29, ram_gb=8.1,
+                     ram_total_gb=12.5, disk_gb=32.0, fp16=False)
+BIG = hw.Hardware(vram_gb=23.0, vram_total_gb=24.0, ram_gb=60.0,
+                  ram_total_gb=64.0, disk_gb=900.0, fp16=True)
+
+
+def measured(machine, sec_per_step_at_512):
+    """A calibration as if every size had been run once on `machine`."""
+    c = st.Calibration()
+    recipe = cat.get(cat.DEFAULT_RECIPE_ID)
+    for side in (512, 640, 768, 1024, 1280, 1536):
+        v = hw.verdict(recipe, machine, side, side)
+        c.record(recipe_id=recipe.id, width=side, height=side, grade=v.grade,
+                 sec_per_step=sec_per_step_at_512 * (side * side) / (512 * 512))
+    return c
+
+
+def test_auto_size_never_speculates():
+    print("\nthe output size moves only on measured evidence")
+    recipe = cat.get(cat.DEFAULT_RECIPE_ID)
+    for name, machine in (("a 4 GB Pascal card", PASCAL), ("a 24 GB card", BIG)):
+        size = st.auto_size(recipe, machine, st.Calibration())
+        check(size == st.CONSERVATIVE_SIZE,
+              f"with nothing measured, {name} opens at "
+              f"{st.CONSERVATIVE_SIZE} px — the timing prior is anchored to one "
+              f"GPU and says nothing about another")
+
+
+def test_auto_size_follows_the_measurement():
+    print("\nonce measured, it follows the machine")
+    recipe = cat.get(cat.DEFAULT_RECIPE_ID)
+    slow = st.auto_size(recipe, PASCAL, measured(PASCAL, 22.34))
+    fast = st.auto_size(recipe, BIG, measured(BIG, 0.35))
+    check(slow == 512, f"a card measured at 22.3 s/step stays small ({slow} px)")
+    check(fast >= 1280, f"a card measured at 0.35 s/step moves up ({fast} px)")
+    check(fast > slow, "the two machines end up somewhere different")
+
+
+def test_auto_size_respects_what_fits():
+    print("\nand never suggests a size the card cannot hold")
+    recipe = cat.get(cat.DEFAULT_RECIPE_ID)
+    # Pretend the slow card is fast, so only the memory verdict can stop it.
+    size = st.auto_size(recipe, PASCAL, measured(PASCAL, 0.01))
+    width, height = size, size
+    check(hw.verdict(recipe, PASCAL, width, height).grade != hw.TOO_BIG,
+          f"{size} px is a size this card can actually hold, even with time "
+          f"taken out of the picture")
+
+
 if __name__ == "__main__":
     raise SystemExit(run(
         test_round_trip, test_unknown_keys_are_preserved,
         test_garbage_is_clamped_not_rejected, test_calibration_keys,
         test_calibration_blends, test_memory_mode_overrides_the_verdict,
-        test_estimates_use_the_measurement, test_mpx_buckets))
+        test_estimates_use_the_measurement, test_mpx_buckets,
+        test_auto_size_never_speculates, test_auto_size_follows_the_measurement,
+        test_auto_size_respects_what_fits))

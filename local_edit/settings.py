@@ -40,7 +40,7 @@ from .engine import binary, catalog, hardware
 
 #: Output size choices. None means "match the source image".
 SIZE_CHOICES = (None, 512, 640, 768, 1024, 1280, 1536)
-DEFAULT_SIZE = 768
+DEFAULT_SIZE = 512
 
 #: How the memory flags are chosen. "auto" defers to `hardware.verdict`, which
 #: is right almost always; the rest are escape hatches for when it is not.
@@ -176,6 +176,11 @@ class Settings:
     #: Seconds an unused engine keeps its weights — and this machine's VRAM.
     idle_timeout: int = 600
 
+    #: False until an output size has been settled on — either by the user
+    #: touching the control, or by `SetupPage` picking one from the measured
+    #: hardware on first run. See `pick_size`.
+    size_chosen: bool = False
+
     compare_filter: str = "nearest"
     last_prompt: str = ""
     last_open_dir: str = ""
@@ -188,7 +193,7 @@ class Settings:
               "ip_adapter_strength", "negative_prompt", "seed",
               "randomize_seed", "memory_mode", "backend", "threads",
               "max_vram_gb", "engine_path", "models_dir", "idle_timeout",
-              "compare_filter", "last_prompt", "last_open_dir",
+              "size_chosen", "compare_filter", "last_prompt", "last_open_dir",
               "last_save_dir", "calibration")
 
     # -- derived ----------------------------------------------------------
@@ -233,6 +238,10 @@ class Settings:
         size = d.get("size", DEFAULT_SIZE)
         s.size = (_clamp_int(size, 64, MAX_SIDE, DEFAULT_SIZE)
                   if isinstance(size, int) else None)
+        # A settings file that predates this flag but names a size was written
+        # by a user who had one, so honour it rather than overriding on the next
+        # launch.
+        s.size_chosen = bool(d.get("size_chosen", "size" in d))
 
         steps = d.get("steps")
         s.steps = (_clamp_int(steps, MIN_STEPS, MAX_STEPS, MIN_STEPS)
@@ -268,6 +277,64 @@ class Settings:
         s.last_save_dir = str(d.get("last_save_dir") or "")
         s.calibration = Calibration.from_dict(d.get("calibration") or {})
         return s
+
+
+#: Where the output size starts before anything has been measured. Small on
+#: purpose: see `SetupPage._auto_size` for why the app opens conservative and
+#: earns the right to raise it rather than guessing from the hardware.
+CONSERVATIVE_SIZE = 512
+
+#: How long one edit should take, for `SetupPage._auto_size`. Five minutes is
+#: about the limit of "let me try this and see".
+AUTO_SIZE_TARGET_S = 300.0
+
+
+def auto_size(recipe, hw, calibration: Calibration,
+              target_seconds: float = AUTO_SIZE_TARGET_S) -> int:
+    """The largest output size that stays under the target at measured speed.
+
+    A fixed default cannot serve both a 4 GB Pascal card and a 24 GB one:
+    768 px is ten minutes on the development machine and about a second on a
+    modern GPU, while 512 px would be a needlessly small image on the latter.
+    So the size adjusts itself — but **only from measurements**.
+
+    That restriction is the whole design. The catalog's timing prior is anchored
+    on one specific GPU, and there is no honest way to guess another card's
+    speed from anything `hardware` can probe: VRAM tells you what fits, not how
+    fast it runs. An earlier attempt scaled the prior by invented per-tier
+    factors and produced the same answer on every machine, which is exactly the
+    failure it was meant to avoid. So a size with no measurement behind it ends
+    the search rather than being estimated into.
+
+    The app therefore opens conservative and earns the right to raise it: the
+    first edit is measured, and from the second onwards this moves up. The
+    asymmetry justifies starting low — too large a default on a slow card is a
+    fifteen-minute wait that reads as a hang, while too small a default on a
+    fast card is an image that arrives in a second beside a visible estimate
+    inviting a bigger one.
+
+    Kept here, free of Qt, so it can be tested without a display.
+    """
+    from .engine import hardware as hardware_mod
+    from .engine import runner as runner_mod
+
+    best = CONSERVATIVE_SIZE
+    for candidate in sorted(c for c in SIZE_CHOICES if c):
+        if candidate < CONSERVATIVE_SIZE:
+            continue
+        width, height = runner_mod.plan_size(recipe, None, candidate)
+        verdict = hardware_mod.verdict(recipe, hw, width, height)
+        if verdict.grade in (hardware_mod.TOO_BIG, hardware_mod.NO_DISK):
+            break
+        rate = calibration.get(recipe.id, width, height, verdict.grade)
+        if rate is None:
+            break                     # no measurement here: do not speculate
+        if runner_mod.estimate_seconds(recipe, width, height, recipe.steps,
+                                       rate, verdict.grade,
+                                       references=1) > target_seconds:
+            break
+        best = candidate
+    return best
 
 
 def load() -> Settings:
