@@ -435,6 +435,21 @@ class SetupPage(QWidget):
         self._hardware = hw
         self._refresh()
 
+    def hardware(self) -> hardware.Hardware:
+        """The last probe. `MainWindow` needs it to grade a finished run."""
+        return self._hardware
+
+    def verdict(self) -> hardware.Verdict:
+        """How the selected recipe would run, at the selected size.
+
+        `MainWindow._start` reads this to pick the memory flags and the initial
+        ETA, so losing it breaks the Generate button and nothing else — which is
+        exactly what happened once: a slice-based edit to the method above this
+        one took this and `hardware()` with it, and because a Qt slot swallows
+        the AttributeError, pressing Generate silently did nothing at all.
+        """
+        return self._grade()
+
     def _auto_size(self) -> bool:
         """Apply `settings.auto_size`, until the user has an opinion of their own.
 
