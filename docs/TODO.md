@@ -37,6 +37,38 @@ Roughly in order of how much they would improve the app.
    PhotoMaker trigger-word handling in `prompt.py`. Each tier is one catalog
    entry away from returning.
 
+0.5 **Try a 4-bit text encoder in diffusers (bitsandbytes), and re-run the
+   engine comparison.** This is the one untested branch of "is sd.cpp actually
+   the right engine here", and it is the branch most likely to change the
+   answer.
+
+   diffusers lost that comparison on this machine for one structural reason: it
+   quantises the diffusion transformer through GGUF but has **no quantisation
+   path for a transformers text encoder**, so 8 GB of fp16 Qwen3-4B has to live
+   somewhere. On 4 GB of VRAM it cannot be the GPU; in 11 GB of RAM it thrashed
+   into 9 GB of zram swap and never finished loading. sd.cpp runs the same
+   encoder at 4-bit in 2.5 GB on the GPU, which is the whole of its advantage.
+
+   `bitsandbytes` would close exactly that gap:
+
+       from transformers import BitsAndBytesConfig
+       q = BitsAndBytesConfig(load_in_4bit=True,
+                              bnb_4bit_compute_dtype=torch.float16)
+       Flux2KleinPipeline.from_pretrained(REPO, transformer=gguf_transformer,
+                                          quantization_config=q)
+
+   The doubt is hardware: bitsandbytes documents 4-bit (NF4/FP4) as wanting
+   compute capability 7.5 or newer, and this card is 6.1. 8-bit is supported
+   further back. Either would bring the encoder under 4 GB. If it works,
+   diffusers becomes viable here and brings LoRAs, ControlNets, inpainting and
+   the adapters this engine cannot load (see item 0) — which would be a real
+   reason to reconsider the engine rather than a theoretical one.
+
+   Everything needed is still on disk: `~/torchtest/venv` has torch
+   2.14.0+cu126 and diffusers 0.40.0, `~/torchtest/hf` has the text encoder and
+   VAE, and `~/le-bench/diffusers_bench3.py` is the harness. Run it against
+   512x512, 4 steps, seed 42 and compare with sd.cpp's 95 s.
+
 1. **Live preview during sampling.** The engine has `--preview tae` and
    `--preview-interval`, which write a cheap decode of the current latent every
    N steps. On a machine where a run is minutes, watching it converge is worth
