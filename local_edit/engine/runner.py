@@ -159,6 +159,11 @@ class Job:
     backend: str = binary.DEFAULT_BACKEND
     threads: int = 0
     max_vram_gb: float = 0.0
+    #: The predicted working set, from `hardware.working_gb`. Carried because
+    #: the CUDA VAE tile size is a *startup* flag chosen from it, so it must
+    #: reach `binary.memory_args` and must be part of the server's identity —
+    #: a warm server started for a roomy run cannot serve a tight one.
+    working_gb: float = 0.0
     engine_path: str | None = None
     extra_args: tuple[str, ...] = ()
 
@@ -497,6 +502,7 @@ class Runner:
                   job.recipe.id, job.width, job.height, job.effective_steps(),
                   job.backend, list(job.memory), job.max_vram_gb,
                   len(job.all_references()))
+        _log.info("predicted working set: %.2f GB", job.working_gb)
         self._fetch_weights()
         self._check()
 
@@ -588,6 +594,7 @@ class Runner:
             api = self.engine.ensure(
                 recipe, job.models_dir, memory=job.memory, backend=job.backend,
                 threads=job.threads, max_vram_gb=job.max_vram_gb,
+                working_gb=job.working_gb,
                 engine_path=job.engine_path, on_stage=self._engine_stage,
                 is_cancelled=lambda: self._cancelled)
         except server.ServerError as e:
@@ -672,7 +679,8 @@ class Runner:
                 backend=job.backend, steps=job.steps, cfg_scale=job.cfg_scale,
                 seed=seed, width=job.width, height=job.height,
                 strength=job.strength, negative_prompt=job.negative_prompt,
-                threads=job.threads, max_vram_gb=job.max_vram_gb)
+                threads=job.threads, max_vram_gb=job.max_vram_gb,
+                working_gb=job.working_gb)
             argv.extend(job.extra_args)
             self._spawn_cli(argv, exe)
             try:

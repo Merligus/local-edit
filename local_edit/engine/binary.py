@@ -222,23 +222,53 @@ def model_args(recipe: Recipe, models_dir: Path) -> list[str]:
 #: The CUDA backend cannot decode this VAE at its default tile size on a 4 GB
 #: card. Sampling finishes, and then `ggml_cuda_pool_vmm::alloc` aborts the
 #: process — after all the expensive work is done, which is the worst possible
-#: moment. Plain `--vae-tiling` is not enough; the tile has to come down to
-#: 16x16 as well. Vulkan decodes the same VAE on the same card with none of
-#: this, so it is the CUDA allocator rather than the hardware.
+#: moment. Plain `--vae-tiling` is not enough; the tile size has to come down
+#: too. Vulkan decodes the same VAE on the same card with none of this, so it
+#: is the CUDA allocator rather than the hardware.
 #:
-#: Measured, once tiled: 10.1 s on the GPU, against 65.9 s with `vae=cpu` and an
-#: abort with either default.
-CUDA_VAE_ARGS = ("--vae-tiling", "--vae-tile-size", "16x16")
+#: **The value is not cosmetic, and 16x16 was wrong.** The engine doubles what
+#: is asked for and then clamps it to the image, so `16x16` became a 32x32
+#: latent tile — one tile covering a 512px image, which is not tiling at all.
+#: Measured at 512x512 with one reference, VAE on the GPU:
+#:
+#:     --vae-tile-size   latent tile   tiles   VAE buffer   result
+#:          16x16           32x32       1x1     848.50 MB   out of memory
+#:           8x8            16x16       3x3     212.13 MB   40 s
+#:           4x4             8x8        7x7      53.03 MB   45 s
+#:
+#: That 848 MB buffer is allocated to *encode* a reference and stays resident
+#: through sampling, so it lands on top of the sampling buffer rather than
+#: beside it. On a 4 GB card it was the whole reason a reference edit could not
+#: run at any size: the app asked for 16x16, got no tiling, and died at
+#: `flux segment 19/27` having never reached a step.
+CUDA_VAE_ARGS = ("--vae-tiling", "--vae-tile-size", "8x8")
+
+#: The same idea one notch further, for when the sampling buffer leaves almost
+#: nothing. Costs about five seconds at 512px and buys 159 MB, which is the
+#: difference between running and not for 512 with three references, and for
+#: 768 with one — both of which fail at 8x8 and finish at 4x4.
+CUDA_VAE_ARGS_TIGHT = ("--vae-tiling", "--vae-tile-size", "4x4")
+
+#: Above this much predicted working set, use the tighter tile. Set from the
+#: measured boundary: 512 with two references needs 0.84 GB and runs at 8x8;
+#: 512 with three needs 1.07 GB and does not.
+TIGHT_WORK_GB = 1.0
 
 
 def memory_args(flags: tuple[str, ...], backend: str = DEFAULT_BACKEND,
-                max_vram_gb: float = 0.0) -> list[str]:
-    """Memory flags from a `hardware.Verdict`, plus backend-specific extras."""
+                max_vram_gb: float = 0.0, working_gb: float = 0.0) -> list[str]:
+    """Memory flags from a `hardware.Verdict`, plus backend-specific extras.
+
+    `working_gb` is the predicted working set, used only to choose between the
+    two CUDA tile sizes; zero means "assume the roomier one".
+    """
     argv = list(flags)
     if backend in FA_BACKENDS:
         argv.append("--diffusion-fa")
     if backend == "cuda":
-        for a in CUDA_VAE_ARGS:                 # see CUDA_VAE_ARGS
+        vae = (CUDA_VAE_ARGS_TIGHT if working_gb >= TIGHT_WORK_GB
+               else CUDA_VAE_ARGS)              # see CUDA_VAE_ARGS
+        for a in vae:
             if a not in argv:
                 argv.append(a)
     if max_vram_gb > 0:
@@ -281,7 +311,8 @@ def build_cli_argv(exe: Path, recipe: Recipe, models_dir: Path, *,
                    steps: int | None = None, cfg_scale: float | None = None,
                    seed: int = -1, width: int = 0, height: int = 0,
                    strength: float | None = None, negative_prompt: str = "",
-                   threads: int = 0, max_vram_gb: float = 0.0) -> list[str]:
+                   threads: int = 0, max_vram_gb: float = 0.0,
+                   working_gb: float = 0.0) -> list[str]:
     """One complete `sd-cli` command line.
 
     Used for recipes the server's JSON API cannot express — PhotoMaker's
@@ -293,7 +324,7 @@ def build_cli_argv(exe: Path, recipe: Recipe, models_dir: Path, *,
             "-p", prompt, "-o", str(output)]
     argv += sampling_args(recipe, steps, cfg_scale, seed, width, height,
                           negative_prompt)
-    argv += memory_args(memory, backend, max_vram_gb)
+    argv += memory_args(memory, backend, max_vram_gb, working_gb)
 
     if init_image is not None:
         argv += ["-i", str(init_image),
@@ -319,7 +350,8 @@ def build_server_argv(exe: Path, recipe: Recipe, models_dir: Path, *,
                       port: int, host: str = "127.0.0.1",
                       memory: tuple[str, ...] = (),
                       backend: str = DEFAULT_BACKEND,
-                      threads: int = 0, max_vram_gb: float = 0.0) -> list[str]:
+                      threads: int = 0, max_vram_gb: float = 0.0,
+                      working_gb: float = 0.0) -> list[str]:
     """The command line for a warm `sd-server` holding one recipe.
 
     Only the model and memory flags go here. Everything that varies per edit —
@@ -328,7 +360,7 @@ def build_server_argv(exe: Path, recipe: Recipe, models_dir: Path, *,
     """
     argv = [str(exe), *model_args(recipe, models_dir),
             "--listen-ip", host, "--listen-port", str(port)]
-    argv += memory_args(memory, backend, max_vram_gb)
+    argv += memory_args(memory, backend, max_vram_gb, working_gb)
     if threads > 0:
         argv += ["-t", str(threads)]
     argv.append("-v")

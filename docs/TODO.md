@@ -123,3 +123,16 @@ Roughly in order of how much they would improve the app.
 10. **A CUDA build helper.** `docs/COMPATIBILITY.md` explains the cmake
     invocation; a `--build-engine` that runs it and pins the result would be
     friendlier than a copy-paste.
+
+## 0.6 — re-measure the reference cost on the new machine
+
+`hardware.OFFLOAD_VRAM_SHARE = 0.45` and the `CUDA_VAE_ARGS` tile sizes were
+calibrated against eleven runs on one 4 GB GTX 1050 Ti with the CUDA build. The
+working-set model itself (total megapixels = output x (1 + references)) should
+carry over, being a property of how the model concatenates reference tokens;
+the two constants are allocator behaviour and probably will not.
+
+Re-run the sweep and re-fit: output 512/768/1024, references 0..3, reading
+`flux compute buffer size` from `-v` output. Vulkan needs the same treatment —
+it decodes this VAE with no tiling at all on the same card, so `CUDA_VAE_ARGS`
+may not be CUDA-specific so much as allocator-specific.

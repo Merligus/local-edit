@@ -168,10 +168,58 @@ def test_server_argv_has_no_prompt():
           "memory flags are startup flags and must be here")
 
 
+def test_cuda_vae_tile_size():
+    print("\nthe CUDA VAE tile is chosen from the working set, and is real")
+    def tile(working_gb, backend="cuda"):
+        argv = binary.memory_args(("--offload-to-cpu",), backend,
+                                  working_gb=working_gb)
+        if "--vae-tile-size" not in argv:
+            return None
+        return argv[argv.index("--vae-tile-size") + 1]
+
+    check(tile(0.62) == "8x8", "a roomy run gets the 8x8 tile")
+    check(tile(1.14) == "4x4",
+          "a tight one drops to 4x4 — measured: 512px with three references "
+          "fails at 8x8 and finishes at 4x4")
+    check(tile(0.0) == "8x8", "an unknown working set assumes the roomier tile")
+    check(tile(5.0, "vulkan") is None,
+          "and none of this applies to Vulkan, which decodes the same VAE on "
+          "the same card with no tiling at all")
+
+    # The value that was there before is the one value that does nothing: the
+    # engine doubles it and clamps to the image, so 16x16 became one 32x32
+    # latent tile covering a 512px frame. The 848 MB buffer that resulted is
+    # why a reference edit could not run at any size on CUDA.
+    check("16x16" not in binary.CUDA_VAE_ARGS,
+          "16x16 is gone — it resolved to a single tile, which is not tiling")
+    for name, args in (("CUDA_VAE_ARGS", binary.CUDA_VAE_ARGS),
+                       ("CUDA_VAE_ARGS_TIGHT", binary.CUDA_VAE_ARGS_TIGHT)):
+        check(args[0] == "--vae-tiling" and args[1] == "--vae-tile-size",
+              f"{name} switches tiling on as well as sizing it")
+
+
+def test_the_tile_matches_what_was_measured():
+    print("\nand the boundary sits where the measurements put it")
+    from local_edit.engine import hardware as hw
+    machine = hw.Hardware(vram_gb=3.99, vram_total_gb=4.29, ram_gb=10.6,
+                          ram_total_gb=12.5, disk_gb=25.0, fp16=False)
+    # (size, references, the tile that was measured to work on this card)
+    for px, refs, want in ((512, 1, "8x8"), (512, 2, "8x8"),
+                           (512, 3, "4x4"), (768, 2, "4x4")):
+        v = hw.verdict(KLEIN, machine, px, px, references=refs)
+        argv = binary.build_server_argv(EXE, KLEIN, MODELS, port=1,
+                                        memory=v.flags, backend="cuda",
+                                        working_gb=v.working_gb)
+        got = argv[argv.index("--vae-tile-size") + 1]
+        check(got == want,
+              f"{px}px with {refs} reference(s): {got} (measured: {want})")
+
+
 if __name__ == "__main__":
     raise SystemExit(run(
         test_model_flags_match_roles, test_references_repeat,
         test_edit_models_do_not_get_an_init_image,
         test_memory_flags_and_flash_attention, test_sampling_params,
         test_photomaker, test_server_body_matches, test_redaction,
-        test_server_argv_has_no_prompt))
+        test_server_argv_has_no_prompt, test_cuda_vae_tile_size,
+        test_the_tile_matches_what_was_measured))

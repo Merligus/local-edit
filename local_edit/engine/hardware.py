@@ -94,6 +94,36 @@ VRAM_MARGIN_GB = 0.25
 #: 3.41 and would have predicted it.
 WORK_HEADROOM = 1.25
 
+#: How much of the free VRAM the working set may claim once the weights are
+#: **offloaded**. Not all of it, which is what the code assumed and what made it
+#: grade runs that cannot happen.
+#:
+#: `--offload-to-cpu` puts the weights in RAM, but the engine still stages each
+#: segment back into VRAM to compute it, and that staging shares the card with
+#: the activations. Measured on a 4 GB card (3.74 GB after the margin), CUDA,
+#: flash attention, tightest VAE tile — predicted working set against outcome:
+#:
+#:     512px   1 ref    0.62 GB   ok
+#:     512px   2 refs   0.88 GB   ok
+#:     512px   3 refs   1.14 GB   ok
+#:     768px   1 ref    1.27 GB   ok
+#:     512x640 3 refs   1.39 GB   out of memory
+#:     768px   2 refs   1.85 GB   out of memory
+#:     640x768 3 refs   2.04 GB   out of memory, at segment 26 of 27
+#:     768px   3 refs   2.43 GB   out of memory
+#:
+#: The boundary is narrow — between 1.27 GB, which runs, and 1.39 GB, which
+#: does not. With the 1.25 headroom applied that is between 43% and 47% of the
+#: 3.74 GB free, and 0.45 sits inside it and separates every measured pass from
+#: every measured failure.
+#:
+#: One machine, one backend: this is a calibration, not a law, and a card with
+#: a different allocator may well place it elsewhere. It replaces an assumption
+#: that was plainly wrong in the other direction — that an offloaded run could
+#: claim the *whole* card — which graded a 640x768 three-reference edit as
+#: merely "offloads to RAM" right up until it died at segment 26 of 27.
+OFFLOAD_VRAM_SHARE = 0.45
+
 #: Above this share of the card held by something else, "your GPU is busy" is
 #: the true explanation rather than "your GPU is small". Below it, the holder is
 #: the desktop — which on this machine is about 0.6 GB of a 4.3 GB card, is
@@ -332,25 +362,57 @@ def probe(models_dir: Path, list_devices_output: str = "") -> Hardware:
 #:      768         —        598 MB
 #:     1024     2763 MB     1120 MB   <- and 2763 MB did not fit; 1120 does
 #:
-#: Fitted over those four points, the exponent is 0.78 — sublinear, because
-#: what remains is dominated by fixed buffers rather than by attention. Without
-#: FA it was 1.25, the quadratic term showing through. At 1024x1024 that is the
-#: difference between 2.8 GB and 1.1 GB, which on a 4 GB card is the difference
-#: between an out-of-memory abort at segment 15 of 27 and a finished image.
-WORK_EXPONENT = 0.78
+#: Fitted over those four points the exponent came out at 0.78 — but those four
+#: points all had **no reference images**, and every edit this app exists for
+#: has at least one. Re-measured across both axes on the CUDA build, reading
+#: the engine's own `flux compute buffer size`:
+#:
+#:     references      0         1         2         3
+#:     512px      329.00 MB  546.50 MB  836.00 MB  1065.50 MB
+#:     768px      597.88 MB 1180.25 MB 1696.63 MB 2213.00 MB
+#:
+#: A reference is not a cheap side input and not a constant surcharge either:
+#: it adds 66% at 512px and 97% at 768px. What actually predicts all ten points
+#: — these eight and the two older sizes — is a single variable, the **total**
+#: pixel count the transformer attends over:
+#:
+#:     total megapixels = output megapixels x (1 + references)
+#:
+#: and the buffer is very nearly linear in it. The engine resizes every
+#: reference to the output size and concatenates its latent tokens, so a
+#: reference is simply another frame; the model has no way to tell where the
+#: tokens came from, and neither does this estimate. Fitted that way the
+#: exponent is 0.99 over a fixed 0.09 GB, and the worst of the ten residuals is
+#: 6%, against 13% for any pure power law.
+#:
+#: The reference term is the part that was missing rather than wrong: at zero
+#: references 0.78 and 0.99 agree to within a tenth of a gigabyte at every size
+#: the app offers. What they do not agree on is a two-reference edit, which is
+#: the ordinary case here.
+WORK_EXPONENT = 0.99
+
+#: Fixed buffers, independent of size and reference count. The intercept of the
+#: same fit.
+WORK_FIXED_GB = 0.09
 
 
-def working_gb(recipe: Recipe, width: int, height: int, hw: Hardware) -> float:
-    """VRAM the run needs beyond the weights, at this output size."""
-    megapixels = max(0.05, (width * height) / 1e6)
-    return (recipe.working_gb * megapixels ** WORK_EXPONENT
+def working_gb(recipe: Recipe, width: int, height: int, hw: Hardware,
+               references: int = 0) -> float:
+    """VRAM the run needs beyond the weights, at this size and reference count.
+
+    `references` counts every image the model attends over, the source image
+    included when the recipe treats it as one — `Job.all_references()` is the
+    list, not `Job.references`.
+    """
+    megapixels = max(0.05, (width * height) / 1e6) * (1 + max(0, references))
+    return (WORK_FIXED_GB + recipe.working_gb * megapixels ** WORK_EXPONENT
             * hw.working_multiplier())
 
 
 def verdict(recipe: Recipe, hw: Hardware, width: int, height: int,
-            pending_bytes: int = 0) -> Verdict:
+            pending_bytes: int = 0, references: int = 0) -> Verdict:
     """Grade one recipe against one machine at one output size."""
-    need_work = working_gb(recipe, width, height, hw)
+    need_work = working_gb(recipe, width, height, hw, references)
     need_weights = recipe.peak_weights_gb()
     download = pending_bytes / 1e9
 
@@ -374,7 +436,12 @@ def verdict(recipe: Recipe, hw: Hardware, width: int, height: int,
     if need_weights + need_live <= vram:
         return made(FITS, "fits your GPU")
 
-    if need_live > vram:
+    # Past this point the weights are not resident, so the comparison is
+    # against the share of the card an offloaded run can actually claim — see
+    # OFFLOAD_VRAM_SHARE. Comparing against all of `vram` graded a 640x768
+    # three-reference edit as merely "offloads to RAM"; it died at segment 26
+    # of 27.
+    if need_live > vram * OFFLOAD_VRAM_SHARE:
         # The activations alone will not fit in the VRAM available. Offloading
         # cannot help — it moves *weights*, and activations must be resident —
         # so sd.cpp will cut the graph finer and try anyway. Still `runnable`:

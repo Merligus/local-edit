@@ -82,7 +82,9 @@ def list_models() -> int:
         f"{'ON THIS MACHINE':<{verdict_width}} EST @768")
     for recipe in catalog.RECIPES:
         pending = fetch.download_size(recipe, models)
-        v = hardware.verdict(recipe, hw, 768, 768, pending)
+        # One reference, because that is the cheapest real edit: the source
+        # image is itself reference 1 for every edit model in the catalog.
+        v = hardware.verdict(recipe, hw, 768, 768, pending, references=1)
         state = "ready" if not pending else f"{human_bytes(pending)} to get"
         seconds = runner.estimate_seconds(recipe, 768, 768, recipe.steps,
                                           grade=v.grade, references=1)
@@ -188,7 +190,7 @@ def bench(ids: list[str]) -> int:
                     f"local-edit --fetch-models {recipe.id}")
                 failed += 1
                 continue
-            v = hardware.verdict(recipe, hw, width, height)
+            v = hardware.verdict(recipe, hw, width, height)  # bench: no refs
             job = runner.Job(
                 recipe=recipe, instruction="a photograph of a red bicycle "
                                            "against a white wall",
@@ -196,6 +198,7 @@ def bench(ids: list[str]) -> int:
                 memory=settings.memory_flags(v),
                 backend=settings.engine_backend(),
                 threads=settings.threads, max_vram_gb=settings.max_vram_gb,
+                working_gb=v.working_gb,
                 engine_path=settings.engine_path or None)
             say(f"{recipe.id}: {recipe.steps} steps at {width}x{height}, "
                 f"{v.summary}…")

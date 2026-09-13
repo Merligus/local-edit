@@ -283,7 +283,8 @@ class MainWindow(QMainWindow):
             return
 
         verdict = hardware.verdict(job.recipe, self._setup.hardware(),
-                                   job.width, job.height)
+                                   job.width, job.height,
+                                   references=len(job.all_references()))
         # Keyword arguments on purpose. local-upscaler has a live bug at
         # main_window.py:169 where a float is passed positionally into a `device`
         # parameter, so every CPU run is recorded under the GPU key and its

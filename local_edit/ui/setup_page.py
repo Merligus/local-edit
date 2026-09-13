@@ -463,7 +463,8 @@ class SetupPage(QWidget):
         if s.size_chosen:
             return False
         best = st.auto_size(s.recipe(), self._hardware, s.calibration,
-                            backend=s.engine_backend())
+                            backend=s.engine_backend(),
+                            references=self.reference_count())
         if best == s.size:
             return False
         s.size = best
@@ -474,12 +475,27 @@ class SetupPage(QWidget):
             self._size.blockSignals(False)
         return True
 
+    def reference_count(self, recipe=None) -> int:
+        """References as the model will see them, source included.
+
+        The source image *is* reference 1 for an edit model, so a plain
+        one-image edit already costs two frames of attention, not one. Counting
+        only the rows in the list would understate every ordinary use of this
+        app by exactly one frame.
+        """
+        recipe = recipe or self._settings.recipe()
+        n = len(self._refs.references())
+        if self._source is not None and recipe.source_as_ref:
+            n += 1
+        return min(n, recipe.max_refs)
+
     def _grade(self) -> hardware.Verdict:
         s = self._settings
         recipe = s.recipe()
         width, height = self.output_size()
         pending = fetch.download_size(recipe, s.models_path())
-        return hardware.verdict(recipe, self._hardware, width, height, pending)
+        return hardware.verdict(recipe, self._hardware, width, height, pending,
+                                self.reference_count(recipe))
 
     def _refresh_recipe_labels(self) -> None:
         """Re-label every entry with how it would run on this machine.
@@ -492,14 +508,16 @@ class SetupPage(QWidget):
         s = self._settings
         width, height = self.output_size()
         models = s.models_path()
-        key = (width, height, str(models), self._hardware)
+        key = (width, height, str(models), self._hardware,
+               len(self._refs.references()), self._source is not None)
         if key == self._labels_key:
             return
         self._labels_key = key
         for i in range(self._recipe.count()):
             recipe = catalog.get(self._recipe.itemData(i))
             pending = fetch.download_size(recipe, models)
-            v = hardware.verdict(recipe, self._hardware, width, height, pending)
+            v = hardware.verdict(recipe, self._hardware, width, height,
+                                 pending, self.reference_count(recipe))
             suffix = v.summary
             if pending:
                 suffix += f" · {human_bytes(pending)} download"
@@ -600,7 +618,7 @@ class SetupPage(QWidget):
         width, height, capped = st.plan_output_size(
             self._settings.recipe(), self._hardware,
             self._source_size if self._source else None,
-            self._settings.size)
+            self._settings.size, self.reference_count())
         # Remembered so `_refresh` can say the cap happened. A size control
         # that quietly produces a different size than it names is worse than
         # one that refuses.
@@ -610,7 +628,8 @@ class SetupPage(QWidget):
     def fitting_size(self) -> int | None:
         """The largest offered size this machine can hold, or None if none can."""
         return st.fitting_size(self._settings.recipe(), self._hardware,
-                               self._source_size if self._source else None)
+                               self._source_size if self._source else None,
+                               self.reference_count())
 
     def use_size(self, longest: int) -> None:
         """Switch the output size, as if the user had picked it themselves.
@@ -649,7 +668,7 @@ class SetupPage(QWidget):
             ip_adapter_strength=s.ip_adapter_strength,
             models_dir=s.models_path(), memory=s.memory_flags(verdict),
             backend=s.engine_backend(), threads=s.threads,
-            max_vram_gb=s.max_vram_gb,
+            max_vram_gb=s.max_vram_gb, working_gb=verdict.working_gb,
             engine_path=s.engine_path or None,
             extra_args=recipe.extra_args)
 

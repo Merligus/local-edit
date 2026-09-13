@@ -34,15 +34,49 @@ BIG = hw.Hardware(vram_gb=23.0, vram_total_gb=24.0, ram_gb=60.0,
 
 def test_matches_the_real_measurements():
     print("\nthe working-set model reproduces what sd.cpp reported")
-    # Four sizes, all measured with flash attention on — which it always is now.
-    # The fit is a power law, so individual points sit a little either side of
-    # it; 12% is the worst of them.
-    for side, measured in ((384, 0.239), (512, 0.329), (768, 0.598),
-                           (1024, 1.120)):
-        predicted = hw.working_gb(KLEIN, side, side, PASCAL)
-        check(abs(predicted - measured) / measured < 0.13,
-              f"{side}x{side}: predicted {predicted:.2f} GB vs measured "
-              f"{measured:.3f} GB")
+    # Every figure is the engine's own `flux compute buffer size`, with flash
+    # attention on — which it always is now. The reference rows matter more
+    # than the size rows: an edit in this app always has at least one, and the
+    # model had no term for them at all until they were measured.
+    MEASURED = (
+        (384, 0, 0.239), (512, 0, 0.329), (768, 0, 0.598), (1024, 0, 1.120),
+        (512, 1, 0.547), (512, 2, 0.836), (512, 3, 1.066),
+        (768, 1, 1.180), (768, 2, 1.697), (768, 3, 2.213),
+    )
+    # And one non-square, because every real edit is one: a 3200x4012 photo
+    # capped for a three-reference run.
+    check(abs(hw.working_gb(KLEIN, 384, 512, PASCAL, 3) - 0.847) / 0.847 < 0.15,
+          "384x512 with three references: measured 0.847 GB")
+    for side, refs, measured in MEASURED:
+        predicted = hw.working_gb(KLEIN, side, side, PASCAL, refs)
+        check(abs(predicted - measured) / measured < 0.15,
+              f"{side}x{side} with {refs} ref(s): predicted {predicted:.2f} GB "
+              f"vs measured {measured:.3f} GB")
+    # The direction of the error is not incidental. A model that under-predicts
+    # grades a run FITS and then the engine dies at segment 2 of 27 with
+    # nothing to show; one that over-predicts costs a smaller image.
+    check(all(hw.working_gb(KLEIN, side, side, PASCAL, refs) >= measured
+              for side, refs, measured in MEASURED),
+          "and never predicts less than was actually needed")
+
+
+def test_references_cost_what_they_were_measured_to_cost():
+    print("\na reference is another frame of attention, not a free extra")
+    bare = hw.working_gb(KLEIN, 512, 512, PASCAL, 0)
+    one = hw.working_gb(KLEIN, 512, 512, PASCAL, 1)
+    check(one > bare * 1.4,
+          f"one reference at 512px is a large increase, not a rounding error "
+          f"({bare:.2f} -> {one:.2f} GB)")
+    # The engine resizes every reference to the output size and concatenates
+    # its tokens, so N references at one size cost about what one does at N
+    # times the area. This is the property the whole model rests on.
+    two_refs = hw.working_gb(KLEIN, 512, 512, PASCAL, 2)
+    triple_area = hw.working_gb(KLEIN, 887, 887, PASCAL, 0)   # 3 x 512x512
+    check(abs(two_refs - triple_area) / triple_area < 0.05,
+          f"two references cost about what three times the area does "
+          f"({two_refs:.2f} against {triple_area:.2f} GB)")
+    check(hw.working_gb(KLEIN, 512, 512, PASCAL, -1) == bare,
+          "a negative count cannot make a run look cheaper than a bare one")
 
 
 def test_predicts_the_real_outcomes():
@@ -58,6 +92,42 @@ def test_predicts_the_real_outcomes():
           "flash attention was enabled, and finishes now")
     check(big.grade != hw.TOO_BIG,
           "and is no longer graded beyond the card, because it no longer is")
+
+
+def test_the_offload_ceiling_matches_the_runs():
+    print("\nan offloaded run cannot claim the whole card, and the line is "
+          "where the runs put it")
+    # The card as it actually was while these were run: an idle Plasma desktop
+    # holding about 0.3 GB. PASCAL is a busier snapshot of the same card, and
+    # using it here would compare the outcomes against a machine that was not
+    # the one they happened on.
+    measured_on = hw.Hardware(vram_gb=3.99, vram_total_gb=4.29, ram_gb=10.65,
+                              ram_total_gb=12.47, disk_gb=25.0, fp16=False)
+    # Eleven real runs on the development card, CUDA, flash attention, weights
+    # offloaded, tightest VAE tile. `True` means it produced an image.
+    RUNS = (
+        (512, 512, 0, True),  (512, 512, 1, True),  (512, 512, 2, True),
+        (512, 512, 3, True),  (768, 768, 1, True),  (1024, 1024, 0, True),
+        (384, 512, 3, True),
+        (512, 640, 3, False), (768, 768, 2, False),
+        (640, 768, 3, False), (768, 768, 3, False),
+    )
+    for w, h, refs, ran in RUNS:
+        v = hw.verdict(KLEIN, measured_on, w, h, references=refs)
+        graded_ok = v.grade not in (hw.TOO_BIG, hw.NO_DISK)
+        check(graded_ok == ran,
+              f"{w}x{h} with {refs} ref(s): graded {v.grade!r} "
+              f"({v.working_gb:.2f} GB), and it "
+              f"{'ran' if ran else 'ran out of memory'}")
+    # The pair that pins the constant. 1.27 GB runs and 1.40 GB does not, so
+    # any share that puts both on the same side of the line is wrong.
+    near_pass = hw.working_gb(KLEIN, 768, 768, PASCAL, 1)
+    near_fail = hw.working_gb(KLEIN, 512, 640, PASCAL, 3)
+    check(near_pass < near_fail,
+          f"the boundary is narrow: {near_pass:.2f} GB runs, "
+          f"{near_fail:.2f} GB does not")
+    check(0.40 < hw.OFFLOAD_VRAM_SHARE < 0.50,
+          f"and OFFLOAD_VRAM_SHARE ({hw.OFFLOAD_VRAM_SHARE}) lies between them")
 
 
 def test_grades_are_ordered():
@@ -104,11 +174,17 @@ def test_disk_is_the_only_hard_stop():
 
 def test_no_fp16_doubles_the_working_set():
     print("\nfp16 changes the answer")
-    pascal = hw.working_gb(KLEIN, 768, 768, PASCAL)
-    modern = hw.working_gb(KLEIN, 768, 768, BIG)
+    pascal = hw.working_gb(KLEIN, 768, 768, PASCAL) - hw.WORK_FIXED_GB
+    modern = hw.working_gb(KLEIN, 768, 768, BIG) - hw.WORK_FIXED_GB
     check(abs(pascal - 2 * modern) < 1e-6,
-          "a card with no fp16 needs twice the working set — every activation "
-          "is full precision")
+          "a card with no fp16 needs twice the *activation* working set — "
+          "every activation is full precision")
+    # The fixed term is buffers, not activations, so precision does not touch
+    # it and it is subtracted above rather than doubled.
+    check(hw.working_gb(KLEIN, 768, 768, PASCAL)
+          - hw.working_gb(KLEIN, 768, 768, BIG) == pascal - modern,
+          "and the fixed term is the same on both, being buffers rather than "
+          "activations")
 
 
 def test_busy_gpu_does_not_condemn_the_card():
@@ -143,7 +219,10 @@ def test_unknown_hardware_is_permissive():
 
 if __name__ == "__main__":
     raise SystemExit(run(
-        test_matches_the_real_measurements, test_predicts_the_real_outcomes,
+        test_matches_the_real_measurements,
+        test_references_cost_what_they_were_measured_to_cost,
+        test_predicts_the_real_outcomes,
+        test_the_offload_ceiling_matches_the_runs,
         test_grades_are_ordered, test_offload_flags,
         test_disk_is_the_only_hard_stop, test_no_fp16_doubles_the_working_set,
         test_busy_gpu_does_not_condemn_the_card,

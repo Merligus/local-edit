@@ -306,7 +306,8 @@ AUTO_SIZE_TARGET_S = 300.0
 
 def auto_size(recipe, hw, calibration: Calibration,
               target_seconds: float = AUTO_SIZE_TARGET_S,
-              backend: str = binary.DEFAULT_BACKEND) -> int:
+              backend: str = binary.DEFAULT_BACKEND,
+              references: int = 0) -> int:
     """The largest output size that stays under the target at measured speed.
 
     A fixed default cannot serve both a 4 GB Pascal card and a 24 GB one:
@@ -339,7 +340,8 @@ def auto_size(recipe, hw, calibration: Calibration,
         if candidate < CONSERVATIVE_SIZE:
             continue
         width, height = runner_mod.plan_size(recipe, None, candidate)
-        verdict = hardware_mod.verdict(recipe, hw, width, height)
+        verdict = hardware_mod.verdict(recipe, hw, width, height,
+                                       references=references)
         if verdict.grade in (hardware_mod.TOO_BIG, hardware_mod.NO_DISK):
             break
         rate = calibration.get(recipe.id, width, height, verdict.grade,
@@ -348,14 +350,15 @@ def auto_size(recipe, hw, calibration: Calibration,
             break                     # no measurement here: do not speculate
         if runner_mod.estimate_seconds(recipe, width, height, recipe.steps,
                                        rate, verdict.grade,
-                                       references=1) > target_seconds:
+                                       references=max(1, references),
+                                       ) > target_seconds:
             break
         best = candidate
     return best
 
 
 def fitting_size(recipe, hw, source_size: tuple[int, int] | None = None,
-                 ) -> int | None:
+                 references: int = 0) -> int | None:
     """The largest offered size this machine can actually hold.
 
     Walks `SIZE_CHOICES` upward and stops at the first one the hardware cannot
@@ -372,7 +375,8 @@ def fitting_size(recipe, hw, source_size: tuple[int, int] | None = None,
     best: int | None = None
     for candidate in sorted(c for c in SIZE_CHOICES if c):
         width, height = runner_mod.plan_size(recipe, source_size, candidate)
-        grade = hardware_mod.verdict(recipe, hw, width, height).grade
+        grade = hardware_mod.verdict(recipe, hw, width, height,
+                                     references=references).grade
         if grade in (hardware_mod.TOO_BIG, hardware_mod.NO_DISK):
             break
         best = candidate
@@ -380,7 +384,8 @@ def fitting_size(recipe, hw, source_size: tuple[int, int] | None = None,
 
 
 def plan_output_size(recipe, hw, source_size: tuple[int, int] | None,
-                     longest: int | None) -> tuple[int, int, int | None]:
+                     longest: int | None,
+                     references: int = 0) -> tuple[int, int, int | None]:
     """Output dimensions, with "match the source" capped at what fits.
 
     Returns `(width, height, capped_to)`; `capped_to` is the size the cap
@@ -407,11 +412,11 @@ def plan_output_size(recipe, hw, source_size: tuple[int, int] | None,
     width, height = runner_mod.plan_size(recipe, source_size, longest)
     if longest is not None or not source_size:
         return width, height, None
-    if hardware_mod.verdict(recipe, hw, width, height).grade \
-            != hardware_mod.TOO_BIG:
+    if hardware_mod.verdict(recipe, hw, width, height,
+                            references=references).grade != hardware_mod.TOO_BIG:
         return width, height, None
 
-    cap = fitting_size(recipe, hw, source_size) or CONSERVATIVE_SIZE
+    cap = fitting_size(recipe, hw, source_size, references) or CONSERVATIVE_SIZE
     width, height = runner_mod.plan_size(recipe, source_size, cap)
     return width, height, cap
 

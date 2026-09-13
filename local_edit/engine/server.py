@@ -102,14 +102,22 @@ class EngineServer:
         return self._client
 
     def key_for(self, recipe: Recipe, memory: tuple[str, ...],
-                backend: str, threads: int, max_vram_gb: float) -> tuple:
+                backend: str, threads: int, max_vram_gb: float,
+                working_gb: float = 0.0) -> tuple:
         """Everything that, if changed, requires a restart.
 
         The memory flags are in the key because they are startup flags: a
         recipe that was graded `FITS` at 512 and `OFFLOAD` at 1024 needs a
         different `--offload-to-cpu` than the running process was given.
+
+        `working_gb` is in the key for the same reason but one step removed: it
+        chooses the CUDA VAE tile size, which is also fixed at startup. Only
+        the resulting flags matter, so what goes in the key is the tile
+        decision rather than the float — otherwise every pixel of difference in
+        the estimate would restart a server that did not need restarting.
         """
-        return (recipe.id, memory, backend, threads, round(max_vram_gb, 2))
+        return (recipe.id, memory, backend, threads, round(max_vram_gb, 2),
+                working_gb >= binary.TIGHT_WORK_GB)
 
     def serves(self, key: tuple) -> bool:
         return self.running and self._key == key
@@ -147,12 +155,14 @@ class EngineServer:
     def ensure(self, recipe: Recipe, models_dir: Path, *,
                memory: tuple[str, ...] = (), backend: str = binary.DEFAULT_BACKEND,
                threads: int = 0, max_vram_gb: float = 0.0,
+               working_gb: float = 0.0,
                engine_path: str | None = None,
                on_stage: Callable[[str, str], None] | None = None,
                is_cancelled: Callable[[], bool] | None = None) -> client.Client:
         """Return a client for a server holding `recipe`, starting one if needed."""
         with self._lock:
-            key = self.key_for(recipe, memory, backend, threads, max_vram_gb)
+            key = self.key_for(recipe, memory, backend, threads, max_vram_gb,
+                               working_gb)
             if self.serves(key):
                 self._last_used = time.monotonic()
                 assert self._client is not None
@@ -160,12 +170,13 @@ class EngineServer:
             self.stop()
             return self._start(recipe, models_dir, key, memory=memory,
                                backend=backend, threads=threads,
-                               max_vram_gb=max_vram_gb, engine_path=engine_path,
+                               max_vram_gb=max_vram_gb, working_gb=working_gb,
+                               engine_path=engine_path,
                                on_stage=on_stage, is_cancelled=is_cancelled)
 
     def _start(self, recipe: Recipe, models_dir: Path, key: tuple, *,
                memory: tuple[str, ...], backend: str, threads: int,
-               max_vram_gb: float, engine_path: str | None,
+               max_vram_gb: float, working_gb: float, engine_path: str | None,
                on_stage: Callable[[str, str], None] | None,
                is_cancelled: Callable[[], bool] | None) -> client.Client:
         exe = binary.find_server(engine_path)
@@ -177,7 +188,7 @@ class EngineServer:
         port = free_port()
         argv = binary.build_server_argv(
             exe, recipe, models_dir, port=port, memory=memory, backend=backend,
-            threads=threads, max_vram_gb=max_vram_gb)
+            threads=threads, max_vram_gb=max_vram_gb, working_gb=working_gb)
 
         # Bound only for the load-and-listen window below; `_await_ready`
         # clears it, and `generate` installs the current run's callbacks.
