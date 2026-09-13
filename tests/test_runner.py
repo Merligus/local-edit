@@ -67,10 +67,45 @@ def test_stage_text_is_not_repeated():
           f"three load ticks announce one stage, not three ({stages})")
 
 
-def test_engine_rate_is_captured():
-    print("\nthe engine's own rate is what gets recorded")
-    r, _, _ = replay(["  |=| 1/4 - 41.20s/it", "  |=| 4/4 - 56.00s/it"])
-    check(r._engine_rate == 56.0, "the most recent rate wins")
+def test_vae_tiles_are_not_sampling_steps():
+    print("\na tiled VAE decode drives the same bar and must not be measured")
+    # Verbatim from a real CUDA run: four sampling steps at ~4.4 s, then nine
+    # VAE tiles at ~1.05 s, all through the same `n/m - Xs/it` widget. Counting
+    # the tiles put the median at 1.05 — a fourfold overstatement, and it went
+    # into calibration, where it would have promised every later run a speed the
+    # card cannot reach.
+    job = runner.Job(recipe=KLEIN, instruction="x", steps=4)
+    r = runner.Runner(job, server.EngineServer())
+    bars = []
+    r._on_progress = lambda d, t: bars.append((d, t))
+    r._on_stage = lambda k, txt: None
+    parser = progress.Parser(on_tick=r._engine_tick, on_load=r._engine_load,
+                             on_stage=r._engine_stage)
+    for line in ("  |=| 1/4 - 5.68s/it", "  |=| 2/4 - 4.42s/it",
+                 "  |=| 3/4 - 4.40s/it", "  |=| 4/4 - 4.39s/it",
+                 "  |=| 1/9 - 1.30s/it", "  |=| 5/9 - 1.05s/it",
+                 "  |=| 9/9 - 1.05s/it"):
+        parser.feed_line(line)
+    check(r._engine_rates == [5.68, 4.42, 4.40, 4.39],
+          "only the four ticks whose denominator matches the requested step "
+          "count are measured")
+    check(abs(runner.throughput(r._engine_rates, 0, 0) - 4.41) < 0.01,
+          f"giving 4.41 s/step, not the 1.05 the tiles would have produced")
+    check((1, 9) in bars and (9, 9) in bars,
+          "the tiles still drive the progress bar — they are real work and the "
+          "user should see it")
+
+
+def test_engine_rates_are_all_captured():
+    print("\nevery rate the engine reports is kept, not just the last")
+    r, _, _ = replay(["  |=| 1/4 - 41.20s/it", "  |=| 2/4 - 4.40s/it",
+                      "  |=| 3/4 - 4.40s/it", "  |=| 4/4 - 1.05s/it"])
+    check(r._engine_rates == [41.20, 4.40, 4.40, 1.05],
+          "all four are collected")
+    check(runner.throughput(r._engine_rates, 0, 0) == 4.40,
+          "and the median discards both the warm-up high and the bogus final "
+          "reading — a real CUDA run emitted its last two ticks in the same "
+          "instant and reported 1.05 against a true 4.4")
 
 
 def test_source_placement():
@@ -139,7 +174,8 @@ def test_failures_are_explained_not_dumped():
 if __name__ == "__main__":
     raise SystemExit(run(
         test_generating_is_not_sampling, test_stage_text_is_not_repeated,
-        test_engine_rate_is_captured, test_source_placement,
+        test_vae_tiles_are_not_sampling_steps,
+        test_engine_rates_are_all_captured, test_source_placement,
         test_prompt_numbering_matches_reference_order,
         test_sizes_are_rounded_to_the_latent_grid,
         test_failures_are_explained_not_dumped))

@@ -95,17 +95,21 @@ def test_memory_mode_overrides_the_verdict():
     check("--params-backend" in s.memory_flags(v), "'stream from disk' does")
 
 
-def test_throughput_prefers_the_engine():
-    print("\nthroughput takes the engine's own rate over the wall clock")
-    # Real ticks from one run: 136.7, 193.1, 249.9, 249.9 seconds, with the
-    # engine reporting 56 s/it. Timing it from outside gives 28.3 or 37.7
-    # depending on the divisor; neither is right.
-    check(runner.throughput(56.0, 113.2, 4) == 56.0,
-          "the engine's figure wins — it is measured inside the sampler loop "
-          "and excludes loading, encoding and decoding for free")
-    check(abs(runner.throughput(0, 113.2, 3) - 37.73) < 0.01,
+def test_throughput_uses_the_median_engine_rate():
+    print("\nthroughput takes the median of the engine's rates")
+    # The engine measures inside the sampler loop, so its numbers beat anything
+    # timed from outside. But the last line alone is not safe: on a real CUDA
+    # run the final two ticks landed in the same instant and the engine printed
+    # 1.05 s/it against a true interval of 4.4.
+    check(runner.throughput([5.9, 4.4, 4.4, 1.05], 0, 0) == 4.4,
+          "a bogus final reading is discarded — taking it would have recorded "
+          "1.05 and promised every later run a speed the card cannot reach")
+    check(runner.throughput([34.40, 21.50, 22.24, 22.34], 0, 0) > 21,
+          "and a high first reading, which carries warm-up, does not drag it "
+          "down either")
+    check(abs(runner.throughput([], 113.2, 3) - 37.73) < 0.01,
           "the wall clock is only the fallback, for a run that reported no rate")
-    check(runner.throughput(0, 0, 0) > 0,
+    check(runner.throughput([], 0, 0) > 0,
           "and a degenerate run still returns something positive")
 
 
@@ -185,7 +189,7 @@ if __name__ == "__main__":
         test_round_trip, test_unknown_keys_are_preserved,
         test_garbage_is_clamped_not_rejected, test_calibration_keys,
         test_calibration_blends, test_memory_mode_overrides_the_verdict,
-        test_throughput_prefers_the_engine,
+        test_throughput_uses_the_median_engine_rate,
         test_estimates_use_the_measurement, test_mpx_buckets,
         test_auto_size_never_speculates, test_auto_size_follows_the_measurement,
         test_auto_size_respects_what_fits))

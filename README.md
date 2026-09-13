@@ -182,6 +182,14 @@ The engine stays loaded between edits, so only the first run of a session pays
 the load; a second edit on a warm engine measured 178 s against 182 s for the
 first.
 
+**A CUDA build of the engine is four times faster on this card** — 4.4 s/step
+against 18.3, and about 32 s for a whole run against 95 s. ggml's Vulkan path
+falls back to scalar code on Pascal; its CUDA path does not. Upstream ships CUDA
+binaries for Windows only, so on Linux it means building, and on a current Arch
+box that takes six non-obvious steps — all of them in
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md). Vulkan stays the default because
+`--fetch-engine` can deliver it and cannot deliver that.
+
 Two things that fall out of those numbers and are worth knowing:
 
 * **References are not free.** They are concatenated onto the sequence the

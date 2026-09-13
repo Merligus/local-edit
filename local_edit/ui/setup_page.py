@@ -460,7 +460,8 @@ class SetupPage(QWidget):
         s = self._settings
         if s.size_chosen:
             return False
-        best = st.auto_size(s.recipe(), self._hardware, s.calibration)
+        best = st.auto_size(s.recipe(), self._hardware, s.calibration,
+                            backend=s.engine_backend())
         if best == s.size:
             return False
         s.size = best
@@ -682,7 +683,8 @@ class SetupPage(QWidget):
         s = self._settings
         steps = s.steps or recipe.steps
         pending = fetch.download_size(recipe, s.models_path())
-        rate = s.calibration.get(recipe.id, width, height, verdict.grade)
+        rate = s.calibration.get(recipe.id, width, height, verdict.grade,
+                                 s.engine_backend())
         # `references=` is not optional here. Each reference adds its tokens to
         # the sequence the transformer attends over — measured at 22.3 s/step
         # bare against 55.4 s/step with two — so leaving it out understated the

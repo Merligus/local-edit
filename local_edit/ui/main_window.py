@@ -161,7 +161,8 @@ class MainWindow(QMainWindow):
 
         verdict = self._setup.verdict()
         rate = self._settings.calibration.get(job.recipe.id, job.width,
-                                              job.height, verdict.grade)
+                                              job.height, verdict.grade,
+                                              job.backend)
         prior = runner.estimate_seconds(
             job.recipe, job.width, job.height, job.effective_steps(), rate,
             verdict.grade, references=len(job.all_references()))
@@ -216,7 +217,8 @@ class MainWindow(QMainWindow):
         # whose tail is optional is exactly how that happens.
         self._settings.calibration.record(
             recipe_id=job.recipe.id, width=job.width, height=job.height,
-            sec_per_step=result.sec_per_step, grade=verdict.grade)
+            sec_per_step=result.sec_per_step, grade=verdict.grade,
+            backend=job.backend)
         st.save(self._settings)
 
         edited, buffer = pil_to_qimage(result.image)

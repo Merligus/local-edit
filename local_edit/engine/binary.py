@@ -53,11 +53,13 @@ from .catalog import Recipe
 CLI_NAME = "sd-cli"
 SERVER_NAME = "sd-server"
 
-#: Which prebuilt release to fetch. Backends that have no Linux prebuilt are
-#: absent on purpose: upstream publishes CUDA binaries for Windows only, so a
-#: CUDA user on Linux builds from source and pins the result in settings. See
-#: docs/COMPATIBILITY.md.
-BACKENDS = ("vulkan", "cpu", "rocm")
+#: Which prebuilt release to fetch. `cuda` is a valid backend but has no entry
+#: in `RELEASES`: upstream publishes CUDA binaries for Windows only, so a CUDA
+#: user on Linux builds from source and points `engine_path` at the result.
+#: That is a real path, not a theoretical one — it is 2.5x faster end to end on
+#: the development machine. docs/COMPATIBILITY.md has the recipe, including the
+#: six workarounds it currently needs.
+BACKENDS = ("vulkan", "cuda", "cpu", "rocm")
 DEFAULT_BACKEND = "vulkan"
 
 
@@ -217,12 +219,28 @@ def model_args(recipe: Recipe, models_dir: Path) -> list[str]:
     return argv
 
 
+#: The CUDA backend cannot decode this VAE at its default tile size on a 4 GB
+#: card. Sampling finishes, and then `ggml_cuda_pool_vmm::alloc` aborts the
+#: process — after all the expensive work is done, which is the worst possible
+#: moment. Plain `--vae-tiling` is not enough; the tile has to come down to
+#: 16x16 as well. Vulkan decodes the same VAE on the same card with none of
+#: this, so it is the CUDA allocator rather than the hardware.
+#:
+#: Measured, once tiled: 10.1 s on the GPU, against 65.9 s with `vae=cpu` and an
+#: abort with either default.
+CUDA_VAE_ARGS = ("--vae-tiling", "--vae-tile-size", "16x16")
+
+
 def memory_args(flags: tuple[str, ...], backend: str = DEFAULT_BACKEND,
                 max_vram_gb: float = 0.0) -> list[str]:
     """Memory flags from a `hardware.Verdict`, plus backend-specific extras."""
     argv = list(flags)
     if backend in FA_BACKENDS:
         argv.append("--diffusion-fa")
+    if backend == "cuda":
+        for a in CUDA_VAE_ARGS:                 # see CUDA_VAE_ARGS
+            if a not in argv:
+                argv.append(a)
     if max_vram_gb > 0:
         argv += ["--max-vram", f"{max_vram_gb:g}"]
     return argv

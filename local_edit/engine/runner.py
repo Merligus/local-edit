@@ -28,6 +28,7 @@ from __future__ import annotations
 import io
 import random
 import shutil
+import statistics
 import subprocess
 import time
 from collections.abc import Callable, Sequence
@@ -268,32 +269,33 @@ def estimate_seconds(recipe: Recipe, width: int, height: int, steps: int,
     return (recipe.load_s if include_load else 0.0) + rate * steps
 
 
-def throughput(engine_rate: float, elapsed: float, steps_elapsed: int) -> float:
-    """Seconds per sampling step, preferring the engine's own figure.
+def throughput(engine_rates: "list[float]", elapsed: float,
+               steps_elapsed: int) -> float:
+    """Seconds per sampling step: the **median** of what the engine reported.
 
-    Every progress line the engine prints carries a rate — `4/4 - 22.34s/it` —
-    which `progress.Parser` already extracts. That number is measured inside the
-    sampler loop, so it excludes weight loading, text encoding and VAE decode
-    for free. Nothing this app can time from outside will beat it, and two
-    attempts at timing it from outside both came out wrong:
+    Every progress line carries a rate — `4/4 - 22.34s/it` — measured inside the
+    sampler loop, so it excludes weight loading, text encoding and VAE decode for
+    free. Nothing timed from outside beats that, and two attempts at timing it
+    from outside were both wrong. But the *last* such line cannot be trusted on
+    its own, which is the third mistake in this same function and the reason it
+    now takes a list:
 
-    * Dividing total elapsed by steps counts the fixed costs as sampling. On
-      this machine that is 11 s of weight loading and 19 s of text encoding
-      before the first step — nearly double the real rate for a four-step Klein
-      run, and it would then predict nearly double for a 24-step Kontext run
-      where the same costs are amortised six times over.
-    * Timing between the first and last tick is better but still wrong, because
-      the clock can only start when the first tick *arrives* — so step 1 falls
-      outside the window — and because the engine sometimes emits the last two
-      ticks together. A real run whose ticks landed at 136.7, 193.1, 249.9 and
-      249.9 gives 28.3 s/step by one reckoning and 37.7 by the other, against an
-      engine-reported 56.
+        CUDA, four steps, ticks at 15.4s, 19.8s, 24.2s, 24.2s
+        real interval 4.4 s/step; engine's final line said 1.05 s/it
 
-    So the wall-clock path is only a fallback for a run that produced no
+    The engine emits the last two updates in the same instant, and whatever it
+    computes for that final line is meaningless. Taking the last value recorded
+    1.05 into calibration — a fourfold overstatement that would have promised
+    every future run a speed the machine cannot reach. The median is immune to
+    it, and also to the opposite artefact at the other end, where the first step
+    carries warm-up and reads high (34.40 against a true 22).
+
+    The wall-clock path survives only as a fallback for a run that reported no
     parseable rate at all.
     """
-    if engine_rate and engine_rate > 0:
-        return engine_rate
+    rates = [r for r in engine_rates if r and r > 0]
+    if rates:
+        return statistics.median(rates)
     return max(0.01, elapsed) / max(1, steps_elapsed)
 
 
@@ -318,8 +320,9 @@ class Runner:
         #: Only used when the engine reported no rate of its own.
         self._first_step = 0
         self._last_step = 0
-        #: The engine's own seconds-per-step, from the last progress line.
-        self._engine_rate = 0.0
+        #: Every seconds-per-step the engine reported. See `throughput` — the
+        #: last one alone is not safe.
+        self._engine_rates: list[float] = []
         self._last_stage: tuple[str, str] = ("", "")
 
     # -- control ----------------------------------------------------------
@@ -395,6 +398,29 @@ class Runner:
         }.get(key, "Working…")
 
     def _engine_tick(self, tick: progress.Tick) -> None:
+        """One counted update from the engine — but not all of them are steps.
+
+        A tiled VAE decode drives the *same* progress widget with the same
+        `n/m - Xs/it` format, once per tile. Those readings are not sampling
+        steps and must not be mistaken for them: a real CUDA run emitted four
+        sampling ticks at 4.4 s and then nine VAE-tile ticks at 1.05 s, and
+        taking the median of all thirteen recorded 1.05 — a fourfold
+        overstatement headed straight into calibration.
+
+        They are told apart by their denominator. Sampling counts to the step
+        count the job asked for; the VAE counts tiles. Anything with a different
+        total belongs to another pass, and drives the bar without touching the
+        rate.
+        """
+        expected = self.job.effective_steps()
+        if tick.steps != expected:
+            # Another pass — the tiled VAE. Show it, but under its own stage and
+            # without polluting the sampling measurement.
+            if self._sampling_started:
+                self._stage(STAGE_DECODE, self._stage_text(STAGE_DECODE))
+                self._progress(tick.step, tick.steps)
+            return
+
         if not self._sampling_started:
             # The only place sampling is declared to have started. See
             # `_engine_stage`.
@@ -404,7 +430,7 @@ class Runner:
         self._steps_seen = tick.steps
         self._last_step = max(self._last_step, tick.step)
         if tick.sec_per_step > 0:
-            self._engine_rate = tick.sec_per_step
+            self._engine_rates.append(tick.sec_per_step)
         self._progress(tick.step, tick.steps)
 
     def _engine_load(self, done: int, total: int) -> None:
@@ -458,7 +484,8 @@ class Runner:
             image=image, prompt=composed, seed=seed,
             steps=self._steps_seen or job.effective_steps(),
             elapsed=elapsed,
-            sec_per_step=throughput(self._engine_rate, sampling, measured_steps),
+            sec_per_step=throughput(self._engine_rates, sampling,
+                                    measured_steps),
             size=image.size, notes=tuple(self._notes),
             log_tail=self.engine.log_tail())
 

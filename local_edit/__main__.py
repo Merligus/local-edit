@@ -94,8 +94,12 @@ def list_models() -> int:
 
 
 def devices() -> int:
+    from . import settings as st
     from .engine import binary
-    out = binary.list_devices()
+    # Must honour the settings override, or this reports on a different engine
+    # than every other command uses — which it did, cheerfully printing the
+    # Vulkan device list for a configuration pointed at a CUDA build.
+    out = binary.list_devices(st.load().engine_path or None)
     if not out:
         say("No engine found. Fetch one with:  local-edit --fetch-engine")
         return 1
@@ -205,7 +209,8 @@ def bench(ids: list[str]) -> int:
                 f"({human_time(elapsed)} total, seed {result.seed})")
             settings.calibration.record(
                 recipe_id=recipe.id, width=width, height=height,
-                sec_per_step=result.sec_per_step, grade=v.grade)
+                sec_per_step=result.sec_per_step, grade=v.grade,
+                backend=settings.engine_backend())
             st.save(settings)
     finally:
         engine.stop()

@@ -103,22 +103,74 @@ compressed RAM. Quantised model weights do not compress, so a recipe that
 "fits in RAM plus swap" would thrash. `hardware.py` never counts swap, and says
 so when it matters.
 
-### If your GPU is newer
+### Building the CUDA engine — worth 4x on Pascal
 
-The Vulkan build works on everything and stays a reasonable default. CUDA is
-faster on NVIDIA, but **upstream publishes CUDA binaries for Windows only**, so
-on Linux that means building:
+Vulkan works everywhere and is the default. **CUDA is four times faster on this
+card**, because ggml's Vulkan path falls back to scalar code on Pascal while its
+CUDA path has hand-tuned quantised-matmul kernels. Measured, FLUX.2 Klein 4B at
+512x512:
 
-```fish
-git clone --recursive https://github.com/leejet/stable-diffusion.cpp
-cd stable-diffusion.cpp
-cmake -B build -DSD_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=89   # 89 = Ada, 86 = Ampere
-cmake --build build --config Release -j
-```
+| | Vulkan | CUDA |
+|---|---|---|
+| text encode | 19.1 s | 10.0 s |
+| sampling | 18.3 s/step | **4.4 s/step** |
+| VAE decode | 9.7 s | 10.1 s |
+| whole run, warm engine | ~95 s | **~32 s** |
 
-Then point the app at it: **Advanced → Backend → Cuda**, and put the build's
-`bin` directory in `engine_path` in
-`~/.config/local-edit/settings.json`. A directory or a binary both work.
+4.4 s/step is essentially the arithmetic floor for a 4 B model at this size on a
+card measured at 1.89 TFLOPS, so there is little left after this.
+
+Upstream publishes CUDA binaries for **Windows only**, so on Linux this means
+building. On a current Arch/CachyOS box that takes more than the obvious
+incantation, and every step below exists because the obvious thing failed:
+
+1. **Do not use the distribution's `cuda` package.** It is 13.x, and CUDA 13
+   removed Pascal entirely — `nvcc -arch=sm_61` is not valid there. Use
+   NVIDIA's 12.x redistributables, which need no root:
+
+   ```fish
+   set R https://developer.download.nvidia.com/compute/cuda/redist
+   # cuda_nvcc 12.9, plus cudart / cccl / libcublas 12.6 for headers and libs
+   ```
+
+2. **Do not use GCC 16.** No CUDA 12.x nvcc can parse its libstdc++
+   (`char8_t is undefined`, `0.0bf16` literal). `-allow-unsupported-compiler`
+   skips the version *check*, not the incompatibility. Install `gcc14` and pass
+   `-ccbin /usr/bin/g++-14`. clang does not help — it uses the same headers.
+
+3. **Patch six declarations.** glibc 2.42 declares `cospi`, `cospif`, `sinpi`,
+   `sinpif`, `rsqrt` and `rsqrtf` `noexcept`; CUDA 12.x declares them without,
+   and nvcc rejects the pair. Append `__THROW` to those six lines in
+   `crt/math_functions.h`. CUDA 13 fixed this upstream, which is precisely why
+   the distribution ships 13.
+
+4. **Symlink `lib64` to `lib`.** The redistributables use `lib/`; nvcc looks in
+   `lib64/` and otherwise cannot find `-lcudart_static`.
+
+5. Configure and build:
+
+   ```fish
+   cmake -B build-cuda -DCMAKE_BUILD_TYPE=Release -DSD_CUDA=ON \
+     -DCMAKE_CUDA_ARCHITECTURES=61 -DCUDAToolkit_ROOT=$CUDA \
+     -DCMAKE_CUDA_COMPILER=$CUDA/bin/nvcc -DGGML_NATIVE=OFF \
+     -DCMAKE_CUDA_FLAGS="-ccbin /usr/bin/g++-14 -allow-unsupported-compiler"
+   ```
+
+   14 minutes on four cores.
+
+6. **Copy the CUDA runtime libraries next to the binaries.**
+   `binary.child_env` puts only the executable's own directory on
+   `LD_LIBRARY_PATH`, so `libcudart.so.12`, `libcublas.so.12` and
+   `libcublasLt.so.12` have to sit beside `sd-cli`.
+
+Then point the app at it — `engine_path` to that directory and `backend` to
+`cuda` in `~/.config/local-edit/settings.json`, or **Advanced → Backend → Cuda**.
+The app supplies `--vae-tiling --vae-tile-size 16x16` automatically on CUDA:
+without it the VAE decode aborts with `ggml_cuda_pool_vmm::alloc` *after*
+sampling has finished, which is the most expensive possible moment to fail.
+
+None of this is something `--fetch-engine` can do for you, which is why the
+Vulkan build remains the default and this stays a documented recipe.
 
 ## Formats
 

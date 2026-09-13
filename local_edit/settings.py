@@ -100,16 +100,31 @@ class Calibration:
 
     @staticmethod
     def key(recipe_id: str, width: int, height: int,
-            grade: str = hardware.FITS) -> str:
-        return f"{recipe_id}@{mpx_bucket(width, height)}/{grade}"
+            grade: str = hardware.FITS,
+            backend: str = binary.DEFAULT_BACKEND) -> str:
+        """Storage key. The backend is in it because it changes the answer most.
+
+        On the development machine the same recipe at the same size samples at
+        23.9 s on CUDA and 81.3 s on Vulkan — a factor of 3.4, larger than the
+        spread between any two grades. Sharing a key between them would let one
+        CUDA run tell every later Vulkan run it was three times faster than it
+        is, and the exponential blend would take several runs to walk that back.
+
+        Vulkan keeps the unsuffixed form so calibration collected before this
+        distinction existed is still read rather than silently discarded.
+        """
+        base = f"{recipe_id}@{mpx_bucket(width, height)}/{grade}"
+        return base if backend == binary.DEFAULT_BACKEND else f"{base}/{backend}"
 
     def get(self, recipe_id: str, width: int, height: int,
-            grade: str = hardware.FITS) -> float | None:
-        v = self.rates.get(self.key(recipe_id, width, height, grade))
+            grade: str = hardware.FITS,
+            backend: str = binary.DEFAULT_BACKEND) -> float | None:
+        v = self.rates.get(self.key(recipe_id, width, height, grade, backend))
         return v if isinstance(v, (int, float)) and v > 0 else None
 
     def record(self, recipe_id: str, width: int, height: int,
-               sec_per_step: float, grade: str = hardware.FITS) -> None:
+               sec_per_step: float, grade: str = hardware.FITS,
+               backend: str = binary.DEFAULT_BACKEND) -> None:
         """Blend a new measurement into the stored one.
 
         An exponential average rather than a replacement: one run that shared
@@ -126,7 +141,7 @@ class Calibration:
         """
         if not (sec_per_step and sec_per_step > 0):
             return
-        k = self.key(recipe_id, width, height, grade)
+        k = self.key(recipe_id, width, height, grade, backend)
         prev = self.rates.get(k)
         self.rates[k] = (0.6 * prev + 0.4 * sec_per_step
                          if isinstance(prev, (int, float)) and prev > 0
@@ -290,7 +305,8 @@ AUTO_SIZE_TARGET_S = 300.0
 
 
 def auto_size(recipe, hw, calibration: Calibration,
-              target_seconds: float = AUTO_SIZE_TARGET_S) -> int:
+              target_seconds: float = AUTO_SIZE_TARGET_S,
+              backend: str = binary.DEFAULT_BACKEND) -> int:
     """The largest output size that stays under the target at measured speed.
 
     A fixed default cannot serve both a 4 GB Pascal card and a 24 GB one:
@@ -326,7 +342,8 @@ def auto_size(recipe, hw, calibration: Calibration,
         verdict = hardware_mod.verdict(recipe, hw, width, height)
         if verdict.grade in (hardware_mod.TOO_BIG, hardware_mod.NO_DISK):
             break
-        rate = calibration.get(recipe.id, width, height, verdict.grade)
+        rate = calibration.get(recipe.id, width, height, verdict.grade,
+                               backend)
         if rate is None:
             break                     # no measurement here: do not speculate
         if runner_mod.estimate_seconds(recipe, width, height, recipe.steps,
