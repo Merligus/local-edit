@@ -154,7 +154,7 @@ out.
 ## Measured on the development machine
 
 A **GTX 1050 Ti** — Pascal, 4 GB, no fp16 under Vulkan — with 12 GB of RAM.
-FLUX.2 Klein 4B (Q4), `--offload-to-cpu`:
+FLUX.2 Klein 4B (Q4), weights resident in VRAM:
 
 | | 384² | 512² | 768² | 1024² |
 |---|---|---|---|---|
