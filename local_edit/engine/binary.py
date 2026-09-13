@@ -32,11 +32,11 @@ under Vulkan. Everything runs in fp32, which roughly doubles the working set —
 `hardware.Hardware.fp16` carries that through to the memory grading, and it is
 the single number that best explains why this card is slow.
 
-**Flash attention is deliberately not enabled on Vulkan.** `--diffusion-fa` is
-the obvious memory win, and upstream's own performance notes list its backends
-as CPU, CUDA/ROCm and Metal — Vulkan is not among them. Passing it here would
-either be ignored or produce wrong images, so `memory_args` adds it only for a
-backend that supports it.
+**Flash attention is enabled everywhere, including Vulkan.** An earlier version
+excluded Vulkan because upstream's performance notes list the supported backends
+as CPU, CUDA/ROCm and Metal. That was taken on trust and it was wrong: measured
+here, `--diffusion-fa` on Vulkan is 6% faster and uses a third less memory. See
+`FA_BACKENDS`.
 """
 
 from __future__ import annotations
@@ -96,9 +96,20 @@ RELEASES = {
         "4a2d142ae4c594a49016188807702d5bd8b5129e3274658f6797f18d029730b8"),
 }
 
-#: Backends whose ggml build has a flash-attention kernel. See the module
-#: docstring — this is why the list is not simply "all of them".
-FA_BACKENDS = frozenset({"cuda", "rocm", "cpu"})
+#: Backends with a working flash-attention kernel — which is all of them.
+#:
+#: Vulkan was excluded here on the strength of upstream's performance notes,
+#: which list the supported backends as CPU, CUDA/ROCm and Metal. Measuring said
+#: otherwise. On this GTX 1050 Ti, `--diffusion-fa` is both faster and much
+#: smaller:
+#:
+#:     512x512   19.57 s/step, 491 MB peak  ->  18.42 s/step, 329 MB
+#:
+#: The output differs by at most 22/255 in one channel and 0.3 on average,
+#: which is what a different-but-correct attention kernel looks like, not
+#: corruption. The memory third is the part that matters: it is the difference
+#: between 1024x1024 fitting on a 4 GB card and not.
+FA_BACKENDS = frozenset({"cuda", "rocm", "cpu", "vulkan"})
 
 
 # ------------------------------------------------------------------ locating

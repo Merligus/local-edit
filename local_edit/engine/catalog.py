@@ -201,7 +201,9 @@ class Recipe:
     #: card without fp16 (every Pascal GPU under Vulkan).
     #:
     #: `flux2-klein-4b-q4` is anchored on sd.cpp's own reported peak compute
-    #: buffer; the rest are scaled from it by hidden size.
+    #: buffer, measured at four sizes **with flash attention enabled**; the rest
+    #: are scaled from it by hidden size. See `hardware.WORK_EXPONENT` for why
+    #: that qualifier matters — it more than halves the figure at 1024x1024.
     working_gb: float = 1.0
     #: Seconds for one sampling step at one megapixel, with no references and
     #: weights resident in VRAM. Scaled by `runner.PIXEL_EXPONENT` rather than
@@ -220,7 +222,32 @@ class Recipe:
         return sum(f.size for f in self.files)
 
     def weights_gb(self) -> float:
+        """Total download size."""
         return self.weights_bytes() / 1e9
+
+    def peak_weights_gb(self) -> float:
+        """The most weight data resident at once — which is *not* the sum.
+
+        sd.cpp stages a run: it loads the text encoder, encodes the prompt,
+        releases it, and only then loads the diffusion model. The two are never
+        resident together, so adding them overstates peak memory by whichever is
+        smaller.
+
+        For `flux2-klein-4b-q4` that is the difference between 5.29 GB and
+        2.84 GB against a card with 3.76 GB free — which is to say, between a
+        recipe the app declares too big for the GPU and one that fits. The sum
+        is still the right number for the *download*; it is the wrong one for
+        the verdict, and using it there made every recipe look heavier than it
+        is.
+        """
+        encoders = {"llm", "llm_vision", "t5xxl", "clip_l", "clip_g",
+                    "clip_vision"}
+        denoisers = {"diffusion", "checkpoint"}
+        encoder = sum(f.size for f in self.files if f.role in encoders)
+        denoiser = sum(f.size for f in self.files if f.role in denoisers)
+        resident = sum(f.size for f in self.files
+                       if f.role not in encoders and f.role not in denoisers)
+        return (max(encoder, denoiser) + resident) / 1e9
 
     def file(self, role: str) -> File | None:
         return next((f for f in self.files if f.role == role), None)
@@ -269,7 +296,7 @@ RECIPES: tuple[Recipe, ...] = (
         ),
         steps=4, cfg_scale=1.0, sampling_method="euler",
         max_refs=6,
-        working_gb=1.3, sec_per_mpx_step=69.0, load_s=25.0,
+        working_gb=0.5, sec_per_mpx_step=69.0, load_s=25.0,
     ),
     Recipe(
         id="flux2-klein-4b-q8",
@@ -290,7 +317,7 @@ RECIPES: tuple[Recipe, ...] = (
         ),
         steps=4, cfg_scale=1.0, sampling_method="euler",
         max_refs=6,
-        working_gb=1.3, sec_per_mpx_step=76.0, load_s=35.0,
+        working_gb=0.5, sec_per_mpx_step=76.0, load_s=35.0,
     ),
 
     # ------------------------------------------------------- quality tier
@@ -318,7 +345,7 @@ RECIPES: tuple[Recipe, ...] = (
         # `--increase-ref-index` they are addressable as image 2 and 3, but
         # quality falls off fast — hence 3 rather than Klein's 6.
         max_refs=3,
-        working_gb=1.7, sec_per_mpx_step=195.0, load_s=60.0,
+        working_gb=0.65, sec_per_mpx_step=195.0, load_s=60.0,
     ),
     Recipe(
         id="flux2-klein-9b-q4",
@@ -339,7 +366,7 @@ RECIPES: tuple[Recipe, ...] = (
         ),
         steps=4, cfg_scale=1.0, sampling_method="euler",
         max_refs=6,
-        working_gb=1.9, sec_per_mpx_step=153.0, load_s=60.0,
+        working_gb=0.73, sec_per_mpx_step=153.0, load_s=60.0,
     ),
 
     # ------------------------------------------------------- the heavy end
@@ -367,7 +394,7 @@ RECIPES: tuple[Recipe, ...] = (
         steps=20, cfg_scale=2.5, sampling_method="euler", flow_shift=3.0,
         #: Upstream says quality is best with one to three images.
         max_refs=3,
-        working_gb=2.3, sec_per_mpx_step=540.0, load_s=120.0,
+        working_gb=0.88, sec_per_mpx_step=540.0, load_s=120.0,
     ),
     Recipe(
         id="flux2-dev-q4",
@@ -389,7 +416,7 @@ RECIPES: tuple[Recipe, ...] = (
         ),
         steps=28, cfg_scale=1.0, sampling_method="euler",
         max_refs=6,
-        working_gb=3.2, sec_per_mpx_step=770.0, load_s=240.0,
+        working_gb=1.22, sec_per_mpx_step=770.0, load_s=240.0,
     ),
 )
 

@@ -318,17 +318,26 @@ def probe(models_dir: Path, list_devices_output: str = "") -> Hardware:
 
 
 # ------------------------------------------------------------------ grading
-#: Exponent relating the working set to pixel count. **Measured**: sd.cpp
-#: reports its own peak compute buffer, and for FLUX.2 Klein 4B on this machine
-#: it is 491 MB at 512x512 and 2763 MB at 1024x1024 — four times the pixels for
-#: 5.6 times the memory, an exponent of 1.25.
+#: Exponent relating the working set to pixel count, **with flash attention
+#: on** — which it now always is, including on Vulkan.
 #:
-#: This one *is* the quadratic attention term showing through, and it is the
-#: reason a model that fits comfortably at 512 can fail to allocate at 1024 on
-#: the same card. Treating it as linear, as the first draft did, understated the
-#: 1024 working set by more than a gigabyte — on a card with 3.4 GiB free, that
-#: is the difference between a correct verdict and a run that spills.
-WORK_EXPONENT = 1.25
+#: That qualifier is the whole story. sd.cpp reports its own peak compute
+#: buffer, and enabling `--diffusion-fa` changes not just the size but the
+#: *shape* of the curve, because flash attention never materialises the
+#: N-by-N attention matrix:
+#:
+#:     size    without FA   with FA
+#:      384         —        239 MB
+#:      512      491 MB      329 MB
+#:      768         —        598 MB
+#:     1024     2763 MB     1120 MB   <- and 2763 MB did not fit; 1120 does
+#:
+#: Fitted over those four points, the exponent is 0.78 — sublinear, because
+#: what remains is dominated by fixed buffers rather than by attention. Without
+#: FA it was 1.25, the quadratic term showing through. At 1024x1024 that is the
+#: difference between 2.8 GB and 1.1 GB, which on a 4 GB card is the difference
+#: between an out-of-memory abort at segment 15 of 27 and a finished image.
+WORK_EXPONENT = 0.78
 
 
 def working_gb(recipe: Recipe, width: int, height: int, hw: Hardware) -> float:
@@ -342,7 +351,7 @@ def verdict(recipe: Recipe, hw: Hardware, width: int, height: int,
             pending_bytes: int = 0) -> Verdict:
     """Grade one recipe against one machine at one output size."""
     need_work = working_gb(recipe, width, height, hw)
-    need_weights = recipe.weights_gb()
+    need_weights = recipe.peak_weights_gb()
     download = pending_bytes / 1e9
 
     def made(grade: str, summary: str, flags: tuple[str, ...] = ()) -> Verdict:

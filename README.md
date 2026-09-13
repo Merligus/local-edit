@@ -156,11 +156,19 @@ out.
 A **GTX 1050 Ti** — Pascal, 4 GB, no fp16 under Vulkan — with 12 GB of RAM.
 FLUX.2 Klein 4B (Q4), `--offload-to-cpu`:
 
-| | 512 × 512 | 1024 × 1024 |
-|---|---|---|
-| sampling | **22.3 s/step** | **76.0 s/step** |
-| peak VRAM beyond weights | 0.49 GB | 2.76 GB |
-| outcome | fine | **out of device memory at segment 15/27** |
+| | 384² | 512² | 768² | 1024² |
+|---|---|---|---|---|
+| sampling | 13.6 s/step | **18.3 s/step** | — | — |
+| peak VRAM beyond weights | 0.24 GB | 0.33 GB | 0.60 GB | 1.12 GB |
+
+Those VRAM figures are **with `--diffusion-fa`**, and that qualifier is worth
+more than it sounds. Upstream's notes list flash attention's backends as CPU,
+CUDA/ROCm and Metal, so this app originally skipped it on Vulkan. Measured, it
+works: 6% faster, and it changes the *shape* of the memory curve from
+quadratic in pixels to an exponent of 0.78, because the N×N attention matrix is
+never built. At 1024×1024 that is 1.12 GB instead of 2.76 GB — which is the
+difference between an out-of-memory abort at segment 15 of 27 and a finished
+image.
 
 Whole runs at 512 × 512, measured end to end:
 

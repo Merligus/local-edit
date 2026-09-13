@@ -86,11 +86,13 @@ def test_memory_flags_and_flash_attention():
     print("\nmemory flags, and flash attention only where it exists")
     argv = argv_for(KLEIN, memory=("--offload-to-cpu",), backend="vulkan")
     check("--offload-to-cpu" in argv, "the verdict's flags are passed through")
-    check("--diffusion-fa" not in argv,
-          "flash attention is NOT passed on Vulkan — ggml has no kernel for it, "
-          "and this app's only GPU is Vulkan")
+    check("--diffusion-fa" in argv,
+          "flash attention IS passed on Vulkan. Upstream's notes list the "
+          "supported backends as CPU, CUDA/ROCm and Metal, so an earlier "
+          "version excluded Vulkan on trust — measured, it is 6% faster and "
+          "uses a third less memory there")
     check("--diffusion-fa" in argv_for(KLEIN, backend="cuda"),
-          "but it is passed on CUDA, where it exists")
+          "and on CUDA")
     check("--max-vram" in argv_for(KLEIN, max_vram_gb=3.0),
           "an explicit VRAM budget is passed when set")
     check("--max-vram" not in argv, "and omitted when not")

@@ -77,6 +77,22 @@ def test_derived_sizes():
           "the default recipe is small enough to be a sane default")
 
 
+def test_peak_is_not_the_sum():
+    print("\npeak memory is the largest stage, not the total download")
+    # sd.cpp loads the text encoder, encodes, releases it, then loads the
+    # transformer. Summing them is right for the download and wrong for the
+    # verdict — it made every recipe look heavier than it is.
+    for r in cat.RECIPES:
+        check(r.peak_weights_gb() <= r.weights_gb(),
+              f"{r.id}: peak {r.peak_weights_gb():.2f} <= download "
+              f"{r.weights_gb():.2f} GB")
+        check(r.peak_weights_gb() > 0, f"{r.id}: peak is a real figure")
+    klein = cat.get("flux2-klein-4b-q4")
+    check(abs(klein.peak_weights_gb() - 2.83) < 0.05,
+          f"the default recipe peaks at 2.83 GB, not its 5.29 GB download "
+          f"(got {klein.peak_weights_gb():.2f})")
+
+
 def test_reference_handling():
     print("\nreference handling matches what each family supports")
     for r in cat.RECIPES:
@@ -140,5 +156,6 @@ if __name__ == "__main__":
     raise SystemExit(run(
         test_identity, test_fully_described, test_files_are_addressable,
         test_no_filename_collisions, test_derived_sizes,
+        test_peak_is_not_the_sum,
         test_reference_handling, test_licences_are_stated,
         test_readme_agrees))
