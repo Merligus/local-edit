@@ -36,6 +36,8 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from .. import log as applog
+
 #: `  |=========>              | 7/20 - 1.23s/it`
 #: Anchored on the ` - <rate>` tail so an ordinary `3/4` in a log message — a
 #: file path, a shard count, a tensor shape — cannot fake a step.
@@ -157,7 +159,17 @@ class Parser:
         self._note(line)
 
     def _note(self, line: str) -> None:
-        """Record a log line and let it move the stage."""
+        """Record a log line, write it to disk, and let it move the stage.
+
+        The in-memory `log` is a bounded tail — it exists to explain the failure
+        that is happening *now* — so the engine's reasoning scrolls out of it
+        within seconds. `applog.engine_line` is the durable copy, and it is
+        called from here rather than from the two readers so that both the
+        server and the one-shot CLI get it without either having to remember.
+        Progress bars never reach this method, which is what keeps the file
+        readable.
+        """
+        applog.engine_line(line)
         if len(self.log) >= LOG_TAIL:
             del self.log[0]
         self.log.append(line)

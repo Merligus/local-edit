@@ -107,8 +107,23 @@ python3 -m local_edit --install # add it to the application menu
 | `--fetch-models ID… \| all` | download a model |
 | `--bench [ID…]` | time a real run and record the rate |
 | `--devices` | what the engine can compute on |
+| `--log [N]` | the last N lines of the log; `--log --path` prints its location |
 | `--refresh-sizes` | re-read every weight file's size from HuggingFace |
 | `--install` / `--uninstall` | desktop entry and icons |
+
+### When something fails
+
+Every run writes to `~/.cache/local-edit/logs/local-edit.log`: the chosen model
+and size, the hardware probe, the exact command line the engine was started
+with, and every line the engine printed. The failure dialog names the file and
+carries the last 120 lines under **Show Details**.
+
+```sh
+python3 -m local_edit --log 200     # what happened on the last run
+LOCAL_EDIT_LOG=debug local-edit     # keep the engine's DEBUG output too
+```
+
+The file rotates at 4 MB, keeping three older copies.
 
 ---
 

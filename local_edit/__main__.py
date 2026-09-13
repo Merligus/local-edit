@@ -26,6 +26,8 @@ Usage:
   local-edit --devices               what the engine can compute on
   local-edit --refresh-sizes         re-read every weight file's size from
                                      HuggingFace and print catalog literals
+  local-edit --log [N]               print the last N lines of the log
+  local-edit --log --path            print where the log file is
   local-edit --install               add to the application menu
   local-edit --uninstall             remove it again
   local-edit --help                  this
@@ -161,10 +163,12 @@ def bench(ids: list[str]) -> int:
     """
     import time
 
+    from . import log
     from . import settings as st
     from .engine import binary, catalog, fetch, hardware, runner, server
     from .ui.text import human_time
 
+    log.setup(console=False)
     settings = st.load()
     models = settings.models_path()
     hw = hardware.probe(models, binary.list_devices())
@@ -261,11 +265,45 @@ def refresh_sizes() -> int:
     return 1 if bad else 0
 
 
+def show_log(args: list[str]) -> int:
+    """Print the log, or say where it is.
+
+    Exists so that reporting a problem is one command rather than a hunt
+    through `~/.cache`, and so the path can be pasted into a bug report.
+    """
+    from . import log
+
+    path = log.log_file()
+    if "--path" in args or "-p" in args:
+        say(path)
+        return 0
+    if not path.exists():
+        say(f"no log yet at {path}")
+        say("It is written while the app runs.")
+        return 1
+    lines = 200
+    for a in args:
+        if a.isdigit():
+            lines = int(a)
+    text = log.tail(lines)
+    say(f"# {path}")
+    say(text)
+    return 0
+
+
 # ---------------------------------------------------------------------- gui
 def gui(image: Path | None) -> int:
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QIcon
     from PySide6.QtWidgets import QApplication
+
+    from . import log
+    # Before QApplication, so that a failure during the Qt bootstrap is in the
+    # file too. `install_excepthook` matters more here than anywhere else: Qt
+    # catches exceptions raised inside a slot and keeps going, so without it a
+    # broken button is silent — which is exactly how one went unexplained.
+    log.setup()
+    log.install_excepthook()
 
     # `PassThrough` before QApplication: rounding the device pixel ratio makes
     # `metrics.gu` disagree with what is actually painted on a fractional-scale
@@ -291,6 +329,18 @@ def gui(image: Path | None) -> int:
 
     # `setStyle` is deliberately never called — plasma-integration already picks
     # Breeze, the kdeglobals palette, the icon theme and the font.
+    from . import settings as st
+    settings = st.load()
+    log.session_header(
+        python=sys.version.split()[0],
+        backend=settings.engine_backend(),
+        engine_path=settings.engine_path or "(default)",
+        models_dir=settings.models_path(),
+        recipe=settings.recipe_id,
+        memory_mode=settings.memory_mode,
+        max_vram_gb=settings.max_vram_gb,
+    )
+
     from .ui.main_window import MainWindow
     window = MainWindow()
     if image is not None:
@@ -325,6 +375,8 @@ def main(argv: list[str] | None = None) -> int:
         return bench(rest)
     if head == "--refresh-sizes":
         return refresh_sizes()
+    if head == "--log":
+        return show_log(rest)
     if head in ("--install", "--uninstall"):
         from . import install
         return (install.install() if head == "--install" else install.uninstall())

@@ -37,9 +37,12 @@ from pathlib import Path
 
 from PIL import Image
 
+from .. import log as applog
 from .. import paths
 from . import binary, client, fetch, hardware, progress, prompt, server
 from .catalog import Recipe
+
+_log = applog.get("runner")
 
 #: `on_stage(key, human_text)`.
 StageCb = Callable[[str, str], None]
@@ -81,6 +84,25 @@ _HINTS = (
                          "Advanced, or pick a lighter model."),
     ("cannot allocate memory", "The machine ran out of RAM. Close something, or "
                                "pick a model the list says fits."),
+    # `flux segment 2/27 (flux.double_blocks.0) failed during weight preparation`
+    #
+    # sd.cpp splits the graph into segments only when it cannot hold the model
+    # at once, and 27 of them means it is at the extreme. "weight preparation"
+    # is the staging step, before any arithmetic — so this is a placement
+    # failure, not a compute one. It is matched separately from the allocator
+    # messages above because the allocator's own line is usually further back
+    # than the retained tail reaches, leaving this as the only evidence.
+    ("failed during weight preparation",
+     "The engine could not place the model's weights in memory.\n\n"
+     "Check that nothing else is using the GPU, then try a smaller output "
+     "size in Advanced, or set Memory to \u201cOffload to RAM\u201d."),
+    ("failed during execution",
+     "The engine ran out of memory partway through.\n\n"
+     "Lower the output size in Advanced, or set Memory to "
+     "\u201cOffload to RAM\u201d."),
+    ("failed during weight",
+     "The engine could not place the model's weights in memory. Check that "
+     "nothing else is using the GPU, then try a smaller output size."),
     ("no vulkan device", "No Vulkan device was found. Switch the backend to CPU "
                          "in Advanced, or check that your GPU driver is installed."),
     ("ggml_vulkan:", "The Vulkan backend failed to start. Switch the backend to "
@@ -176,13 +198,22 @@ class Result:
 
 
 def _explain(log: str, returncode: int | None = None) -> str:
+    """One actionable sentence for the user; the whole log goes to the file.
+
+    The dialog gets a hint and the file gets everything, which is the split
+    that matters: a hint the user can act on is useless for diagnosis, and a
+    sixty-line dump is useless in a message box.
+    """
     low = log.lower()
+    _log.error("engine failure (returncode=%s):\n%s", returncode, log.strip())
     for needle, hint in _HINTS:
         if needle in low:
+            _log.info("matched hint %r", needle)
             return hint
     tail = [ln for ln in log.strip().splitlines() if ln.strip()][-4:]
     head = ("The engine failed." if returncode is None
             else f"The engine exited with code {returncode}.")
+    _log.warning("no hint matched — showing the raw tail")
     return head + ("\n" + "\n".join(tail) if tail else "")
 
 
@@ -458,11 +489,20 @@ class Runner:
     # -- the run ----------------------------------------------------------
     def run(self) -> Result:
         job = self.job
+        # Logged before anything can fail, because the first question about any
+        # failure is "run with what?" — model, size, memory flags and backend
+        # are the four answers, and none of them survive in the error message.
+        _log.info("run: %s %dx%d steps=%d backend=%s memory=%s max_vram=%.2f "
+                  "refs=%d",
+                  job.recipe.id, job.width, job.height, job.effective_steps(),
+                  job.backend, list(job.memory), job.max_vram_gb,
+                  len(job.all_references()))
         self._fetch_weights()
         self._check()
 
         composed, refs = self.compose()
         seed = job.seed if job.seed >= 0 else random.randrange(0, 2 ** 31 - 1)
+        _log.info("prompt (seed %d): %s", seed, composed)
         started = time.monotonic()
 
         self._stage(STAGE_LOAD, self._stage_text(STAGE_LOAD))
@@ -480,7 +520,7 @@ class Runner:
         # full count when there were not two ticks to measure between, which is
         # the best available answer for a one-step run.
         measured_steps = max(1, self._last_step - self._first_step)
-        return Result(
+        result = Result(
             image=image, prompt=composed, seed=seed,
             steps=self._steps_seen or job.effective_steps(),
             elapsed=elapsed,
@@ -488,6 +528,10 @@ class Runner:
                                     measured_steps),
             size=image.size, notes=tuple(self._notes),
             log_tail=self.engine.log_tail())
+        _log.info("done: %dx%d in %.1fs (%.2f s/step, %d steps)",
+                  result.size[0], result.size[1], result.elapsed,
+                  result.sec_per_step, result.steps)
+        return result
 
     # -- steps ------------------------------------------------------------
     def _fetch_weights(self) -> None:
@@ -665,6 +709,7 @@ class Runner:
         parser = progress.Parser(on_tick=self._engine_tick,
                                  on_load=self._engine_load,
                                  on_stage=self._engine_stage)
+        _log.info("argv: %s", " ".join(argv))
         try:
             self._proc = subprocess.Popen(
                 argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,

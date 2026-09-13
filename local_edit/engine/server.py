@@ -41,8 +41,11 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from .. import log as applog
 from . import binary, client, progress
 from .catalog import Recipe
+
+_log = applog.get("server")
 
 #: How long to wait for `capabilities` to answer, on top of the recipe's own
 #: load prior. Generous because a disk-streamed recipe reads gigabytes before
@@ -180,6 +183,12 @@ class EngineServer:
         # clears it, and `generate` installs the current run's callbacks.
         self._parser = progress.Parser(on_stage=on_stage)
         self._ended.clear()
+        # The full argv, verbatim. Every memory decision the app made — the
+        # `--max-vram` figure, `--offload-to-cpu`, which files were chosen —
+        # is here and nowhere else, and reconstructing it from the settings
+        # afterwards means guessing at what was current at the time.
+        _log.info("starting %s on port %d", exe.name, port)
+        _log.info("argv: %s", " ".join(argv))
         try:
             self._proc = subprocess.Popen(
                 argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -251,6 +260,8 @@ class EngineServer:
             pass
         finally:
             self._parser.flush()
+            proc.poll()
+            _log.info("engine process ended (returncode=%s)", proc.returncode)
             self._ended.set()
 
     def stop(self) -> None:

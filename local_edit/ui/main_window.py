@@ -43,6 +43,7 @@ from PySide6.QtCore import QThread, QTimer
 from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtWidgets import QMainWindow, QMessageBox, QStackedWidget
 
+from .. import log as applog
 from .. import settings as st
 from ..engine import binary, hardware, runner, server
 from . import metrics as me
@@ -50,6 +51,8 @@ from .progress_page import ProgressPage
 from .result_page import ResultPage
 from .setup_page import SetupPage
 from .worker import EditWorker
+
+_log = applog.get("window")
 
 PAGE_SETUP, PAGE_PROGRESS, PAGE_RESULT = 0, 1, 2
 
@@ -129,8 +132,16 @@ class MainWindow(QMainWindow):
     def _probe_hardware(self, with_engine: bool = True) -> None:
         devices = (binary.list_devices(self._settings.engine_path or None)
                    if with_engine else "")
-        self._setup.set_hardware(
-            hardware.probe(self._settings.models_path(), devices))
+        hw = hardware.probe(self._settings.models_path(), devices)
+        # Logged on every probe, not just the first. Free VRAM is the number
+        # that changes underneath a run — another application taking the card
+        # is invisible in any error the engine produces — so a timestamped
+        # series of it is what makes an intermittent failure readable later.
+        _log.info("hardware: gpu=%r vram=%.2f/%.2f GB ram=%.2f/%.2f GB "
+                  "disk=%.0f GB fp16=%s",
+                  hw.gpu_name, hw.vram_gb, hw.vram_total_gb,
+                  hw.ram_gb, hw.ram_total_gb, hw.disk_gb, hw.fp16)
+        self._setup.set_hardware(hw)
 
     def _housekeep(self) -> None:
         """Retire an idle engine, and keep the free-VRAM figure current."""
@@ -160,6 +171,7 @@ class MainWindow(QMainWindow):
         st.save(self._settings)
 
         verdict = self._setup.verdict()
+        _log.info("verdict: %s — %s", verdict.grade, verdict.summary)
         rate = self._settings.calibration.get(job.recipe.id, job.width,
                                               job.height, verdict.grade,
                                               job.backend)
@@ -238,7 +250,15 @@ class MainWindow(QMainWindow):
         self._teardown()
         self._stack.setCurrentIndex(PAGE_SETUP)
         self._probe_hardware(with_engine=False)
-        QMessageBox.warning(self, "The edit failed", message)
+        # The dialog says what to do; the file says what happened. Naming the
+        # file here is the point of having one — otherwise the only person who
+        # can find it is the one who already knows it exists.
+        box = QMessageBox(QMessageBox.Icon.Warning, "The edit failed",
+                          message, QMessageBox.StandardButton.Ok, self)
+        box.setInformativeText(
+            "The full engine output is in\n" + str(applog.log_file()))
+        box.setDetailedText(applog.tail(120))
+        box.exec()
 
     def _on_cancelled(self) -> None:
         self._teardown()

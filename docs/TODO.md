@@ -64,10 +64,22 @@ Roughly in order of how much they would improve the app.
    the adapters this engine cannot load (see item 0) — which would be a real
    reason to reconsider the engine rather than a theoretical one.
 
-   Everything needed is still on disk: `~/torchtest/venv` has torch
-   2.14.0+cu126 and diffusers 0.40.0, `~/torchtest/hf` has the text encoder and
-   VAE, and `~/le-bench/diffusers_bench3.py` is the harness. Run it against
-   512x512, 4 steps, seed 42 and compare with sd.cpp's 95 s.
+   **The pieces are no longer on disk** — the 15 GB venv and HuggingFace cache
+   were deleted to reclaim space, so this starts from nothing:
+
+       python3 -m venv venv
+       venv/bin/pip install torch --index-url https://download.pytorch.org/whl/cu126
+       venv/bin/pip install diffusers transformers accelerate bitsandbytes \
+                            gguf numpy pillow sentencepiece protobuf
+       # then snapshot_download black-forest-labs/FLUX.2-klein-4B, allow_patterns
+       # ["model_index.json","scheduler/*","tokenizer/*","text_encoder/*","vae/*"]
+       # (~8 GB; the 7.75 GB fp16 transformer is not needed — use the Q4_0 GGUF
+       #  the app already has)
+
+   Budget about 25 minutes of downloading and 20 GB. Set `TMPDIR` somewhere on
+   the real disk: `/tmp` here is tmpfs and pip will fill it. The baseline to
+   beat is sd.cpp at **32 s** on CUDA for 512x512, 4 steps, seed 42 — not the
+   95 s Vulkan figure this item was originally written against.
 
 1. **Live preview during sampling.** The engine has `--preview tae` and
    `--preview-interval`, which write a cheap decode of the current latent every

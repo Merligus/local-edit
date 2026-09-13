@@ -21,7 +21,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, Signal, Slot
 
+from .. import log as applog
 from ..engine import runner, server
+
+_log = applog.get("worker")
 
 
 class EditWorker(QObject):
@@ -50,11 +53,14 @@ class EditWorker(QObject):
         except runner.Cancelled:
             self.cancelled.emit()
         except (runner.EditError, server.ServerError) as e:
+            _log.error("edit failed: %s", e)
             self.failed.emit(str(e))
         except Exception as e:                          # noqa: BLE001
             # A worker thread that raises takes the whole app down with an
             # unhelpful abort, so anything unexpected is reported as a failure
-            # the user can at least read.
+            # the user can at least read. The *traceback* is the part worth
+            # keeping, and the dialog cannot show it, so it goes to the file.
+            _log.exception("unexpected error during the run")
             self.failed.emit(f"Unexpected error: {type(e).__name__}: {e}")
         else:
             self.finished.emit(result)
