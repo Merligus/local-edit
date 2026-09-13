@@ -125,10 +125,89 @@ def test_clicking_generate_starts_a_run():
         w._cancel()
         w._teardown()
         check(w._thread is None, "cancelling tears the thread down")
+    w._housekeeping.stop()
     w._engine.stop()
+    w.close()
+    w.deleteLater()
+    app.processEvents()
+
+
+def test_a_too_big_run_asks_before_starting():
+    print("\na run the machine cannot hold is not started silently")
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import QApplication, QMessageBox
+    except ImportError:
+        check(True, "PySide6 is not installed; skipping the live check")
+        return
+
+    from local_edit.engine import hardware as hw
+
+    app = QApplication.instance() or QApplication([])
+    from local_edit.ui import icons, metrics
+    icons.install(app)
+    metrics.install(app)
+    from local_edit.ui.main_window import MainWindow
+
+    def click(wanted):
+        """Answer the next QMessageBox with the button whose label matches."""
+        def _exec(self):
+            self._picked = next(
+                (b for b in self.buttons()
+                 if wanted in b.text().replace("&", "")), None)
+            return 0
+        QMessageBox.exec = _exec
+        QMessageBox.clickedButton = lambda self: getattr(self, "_picked", None)
+
+    # A card with barely any VRAM, but not a *busy* one — `verdict` reports
+    # BUSY rather than TOO_BIG when something else holds most of the card, and
+    # that is a different grade with a different fix.
+    small = hw.Hardware(vram_gb=1.05, vram_total_gb=1.20, ram_gb=8.0,
+                        ram_total_gb=12.0, disk_gb=500.0,
+                        gpu_name="test card", fp16=False)
+
+    saved = (QMessageBox.exec, QMessageBox.clickedButton)
+    w = MainWindow()
+    # Both of these would otherwise overwrite the fixture below with the real
+    # machine's numbers: `__init__` defers the first probe with a singleShot,
+    # and the housekeeping timer re-probes every twenty seconds.
+    w._housekeeping.stop()
+    app.processEvents()
+    w._setup.set_hardware(small)
+    w._setup.set_prompt("a red bicycle against a white wall")
+    w._setup.use_size(1536)
+    app.processEvents()
+
+    grade = w._setup.verdict().grade
+    check(grade == hw.TOO_BIG, f"1536 px on a 1.2 GB card grades too_big "
+                               f"(got {grade!r})")
+
+    click("Cancel")
+    w._start()
+    app.processEvents()
+    check(w._thread is None, "cancelling the warning starts nothing at all — "
+                            "this is the run that used to fail after 2.97s")
+    check(w._stack.currentIndex() == 0, "and the window stays on the setup page")
+
+    # And the offer, when there is one to make.
+    w._setup.set_hardware(hw.Hardware(
+        vram_gb=3.99, vram_total_gb=4.29, ram_gb=10.6, ram_total_gb=12.5,
+        disk_gb=500.0, gpu_name="test card", fp16=False))
+    w._setup.use_size(None)
+    w._setup._source_size = (3200, 4012)
+    fits = w._setup.fitting_size()
+    check(fits is not None, f"a 4 GB card has a size to offer ({fits} px)")
+
+    QMessageBox.exec, QMessageBox.clickedButton = saved
+    w._engine.stop()
+    w.close()
+    w.deleteLater()
+    app.processEvents()
 
 
 if __name__ == "__main__":
     raise SystemExit(run(test_main_window_only_calls_what_exists,
                          test_pages_expose_their_signals,
-                         test_clicking_generate_starts_a_run))
+                         test_clicking_generate_starts_a_run,
+                         test_a_too_big_run_asks_before_starting))

@@ -99,6 +99,8 @@ class SetupPage(QWidget):
         self._settings = settings
         self._source: Path | None = None
         self._source_size: tuple[int, int] = (0, 0)
+        #: Set by `output_size` when "match the source" had to be capped.
+        self._capped_to: int | None = None
         self._hardware = hardware.Hardware()
         self._verdict: hardware.Verdict | None = None
         self._override_locked = False
@@ -595,9 +597,37 @@ class SetupPage(QWidget):
         return self._source_size
 
     def output_size(self) -> tuple[int, int]:
-        return runner.plan_size(self._settings.recipe(),
-                                self._source_size if self._source else None,
-                                self._settings.size)
+        width, height, capped = st.plan_output_size(
+            self._settings.recipe(), self._hardware,
+            self._source_size if self._source else None,
+            self._settings.size)
+        # Remembered so `_refresh` can say the cap happened. A size control
+        # that quietly produces a different size than it names is worse than
+        # one that refuses.
+        self._capped_to = capped
+        return width, height
+
+    def fitting_size(self) -> int | None:
+        """The largest offered size this machine can hold, or None if none can."""
+        return st.fitting_size(self._settings.recipe(), self._hardware,
+                               self._source_size if self._source else None)
+
+    def use_size(self, longest: int) -> None:
+        """Switch the output size, as if the user had picked it themselves.
+
+        Marks `size_chosen`, because after this the app must not move the size
+        again on its own — `_auto_size` would otherwise overwrite the choice
+        the user just accepted in a dialog.
+        """
+        s = self._settings
+        s.size = longest
+        s.size_chosen = True
+        index = self._size.findData(longest)
+        if index >= 0:
+            self._size.blockSignals(True)
+            self._size.setCurrentIndex(index)
+            self._size.blockSignals(False)
+        self._refresh()
 
     def set_prompt(self, text: str) -> None:
         self._prompt.setPlainText(text)
@@ -711,6 +741,10 @@ class SetupPage(QWidget):
         elif verdict.grade == hardware.TOO_BIG:
             bits.append("It will still try, by cutting the work into pieces, "
                         "but expect it to be slow.")
+        if self._capped_to is not None:
+            bits.append(f"The source is larger than this machine can generate, "
+                        f"so the output is capped at {self._capped_to} px — "
+                        f"pick a size in Advanced to override.")
         if self._hardware.swap_is_zram and verdict.grade in (hardware.STREAM,
                                                              hardware.TOO_BIG):
             bits.append("Swap on this machine is zram — compressed RAM — which "

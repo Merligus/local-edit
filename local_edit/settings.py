@@ -354,6 +354,68 @@ def auto_size(recipe, hw, calibration: Calibration,
     return best
 
 
+def fitting_size(recipe, hw, source_size: tuple[int, int] | None = None,
+                 ) -> int | None:
+    """The largest offered size this machine can actually hold.
+
+    Walks `SIZE_CHOICES` upward and stops at the first one the hardware cannot
+    take. Returns `None` when *nothing* offered fits, which is a real answer:
+    the caller then has no size to suggest and must say so rather than pretend.
+
+    Unlike `auto_size` this asks only "does it fit", never "how long will it
+    take", so it needs no measurement and gives an answer on a machine the app
+    has never run on.
+    """
+    from .engine import hardware as hardware_mod
+    from .engine import runner as runner_mod
+
+    best: int | None = None
+    for candidate in sorted(c for c in SIZE_CHOICES if c):
+        width, height = runner_mod.plan_size(recipe, source_size, candidate)
+        grade = hardware_mod.verdict(recipe, hw, width, height).grade
+        if grade in (hardware_mod.TOO_BIG, hardware_mod.NO_DISK):
+            break
+        best = candidate
+    return best
+
+
+def plan_output_size(recipe, hw, source_size: tuple[int, int] | None,
+                     longest: int | None) -> tuple[int, int, int | None]:
+    """Output dimensions, with "match the source" capped at what fits.
+
+    Returns `(width, height, capped_to)`; `capped_to` is the size the cap
+    landed on, or `None` when no cap was applied.
+
+    Only "match the source" is capped, and only when the uncapped size is
+    actually `TOO_BIG` on this machine. Both restrictions matter:
+
+    * An explicit choice from the combo box is the user's, and silently
+      overriding it would make the control a lie. A too-large explicit size is
+      handled by the confirmation in `MainWindow._start` instead, which asks.
+    * Capping unconditionally would shrink full-resolution output on a card
+      that can manage it, which is the whole point of owning such a card.
+
+    "Match the source" is the one that needs this, because it is not a size at
+    all — it is whatever the camera produced. A 3200x4032 phone photo asks for
+    12.9 megapixels, roughly fifty times a 512px run, and the engine answers
+    that it needs 10.4 GB for a single attention segment. That combination
+    took a 4 GB card from "slow" to "fails after two and a half seconds".
+    """
+    from .engine import hardware as hardware_mod
+    from .engine import runner as runner_mod
+
+    width, height = runner_mod.plan_size(recipe, source_size, longest)
+    if longest is not None or not source_size:
+        return width, height, None
+    if hardware_mod.verdict(recipe, hw, width, height).grade \
+            != hardware_mod.TOO_BIG:
+        return width, height, None
+
+    cap = fitting_size(recipe, hw, source_size) or CONSERVATIVE_SIZE
+    width, height = runner_mod.plan_size(recipe, source_size, cap)
+    return width, height, cap
+
+
 def load() -> Settings:
     return Settings.from_dict(paths.read_json(paths.settings_file(), {}))
 

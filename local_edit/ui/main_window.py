@@ -166,6 +166,12 @@ class MainWindow(QMainWindow):
                 "    python3 -m local_edit --fetch-engine")
             return
 
+        # Graded *before* the job is built, because the answer can change the
+        # size the job is built with.
+        verdict = self._setup.verdict()
+        if verdict.grade == hardware.TOO_BIG and not self._allow_too_big(verdict):
+            return
+
         job = self._setup.build_job()
         self._job = job
         st.save(self._settings)
@@ -195,6 +201,62 @@ class MainWindow(QMainWindow):
         self._worker.failed.connect(self._on_failed)
         self._worker.cancelled.connect(self._on_cancelled)
         self._thread.start()
+
+    def _allow_too_big(self, verdict: hardware.Verdict) -> bool:
+        """Ask before starting a run this machine is not expected to survive.
+
+        The app used to start these silently, with only a line of small print
+        saying to expect it to be slow. That is the wrong description of what
+        happens: a 3200x4032 run on a 4 GB card does not finish slowly, it
+        fails after two and a half seconds with
+
+            model manager cannot make enough memory available on CUDA0:
+            need 10390.14 MB device, available 1527.12 MB
+
+        Returns True to go ahead. "Try anyway" is kept, and kept prominent
+        enough to find, because `Verdict.runnable` is right that this grade is
+        a statement about comfort rather than certainty — sd.cpp really does
+        cut the graph further when a segment will not fit, and someone sizing
+        up a new machine is entitled to find out where it gives up. What the
+        dialog changes is that the choice is now made knowingly, and that the
+        size which *would* work is offered rather than left to be discovered.
+        """
+        width, height = self._setup.output_size()
+        hw = self._setup.hardware()
+        fits = self._setup.fitting_size()
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Too large for this machine")
+        box.setText(f"{width} x {height} is more than this machine can hold.")
+        box.setInformativeText(
+            f"{verdict.summary.capitalize()}, and the GPU has "
+            f"{hw.vram_total_gb:.1f} GB in total.\n\n"
+            + (f"{fits} px on the long edge fits."
+               if fits is not None else
+               "No offered size fits this model on this machine — a lighter "
+               "model from the list would."))
+
+        use = (box.addButton(f"Use {fits} px", QMessageBox.ButtonRole.AcceptRole)
+               if fits is not None else None)
+        anyway = box.addButton("Try anyway", QMessageBox.ButtonRole.DestructiveRole)
+        cancel = box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(use or cancel)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is cancel or clicked is None:
+            _log.info("too_big: cancelled at %dx%d", width, height)
+            return False
+        if clicked is anyway:
+            _log.warning("too_big: starting anyway at %dx%d (%s)",
+                         width, height, verdict.summary)
+            return True
+        assert fits is not None
+        _log.info("too_big: %dx%d declined, resizing to %d px",
+                  width, height, fits)
+        self._setup.use_size(fits)
+        return True
 
     def _cancel(self) -> None:
         if self._worker is not None:

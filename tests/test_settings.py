@@ -184,6 +184,64 @@ def test_auto_size_respects_what_fits():
           f"taken out of the picture")
 
 
+#: The photo that started this: a phone camera's full frame, which
+#: "match the source" turned into a 12.9 megapixel request on a 4 GB card.
+PHONE_PHOTO = (3200, 4012)
+
+
+def test_fitting_size_finds_the_ceiling():
+    print("\nthe largest offered size that actually fits")
+    recipe = cat.get(cat.DEFAULT_RECIPE_ID)
+    small = st.fitting_size(recipe, PASCAL)
+    big = st.fitting_size(recipe, BIG)
+    check(small is not None, f"the 4 GB card has a ceiling ({small} px)")
+    check(big is not None and big >= small, f"the 24 GB card's is no lower ({big} px)")
+    for name, machine, size in (("Pascal", PASCAL, small), ("24 GB", BIG, big)):
+        check(hw.verdict(recipe, machine, size, size).grade != hw.TOO_BIG,
+              f"what it returns for {name} is genuinely not too_big")
+    bigger = [c for c in st.SIZE_CHOICES if c and c > small]
+    check(all(hw.verdict(recipe, PASCAL, c, c).grade == hw.TOO_BIG
+              for c in bigger),
+          "and every larger choice really is too big — it is a ceiling, "
+          "not just some size that happens to work")
+
+
+def test_match_source_is_capped():
+    print("\n'match the source' cannot ask for more than the card can hold")
+    recipe = cat.get(cat.DEFAULT_RECIPE_ID)
+    width, height, capped = st.plan_output_size(recipe, PASCAL, PHONE_PHOTO, None)
+    check(capped is not None, f"the cap applied ({capped} px)")
+    check(max(width, height) <= capped + recipe.size_multiple,
+          f"the long edge came down to {max(width, height)} px "
+          f"from {max(PHONE_PHOTO)}")
+    check(hw.verdict(recipe, PASCAL, width, height).grade != hw.TOO_BIG,
+          "and the capped size is one the card can actually hold")
+    # The aspect ratio is the reason to cap rather than fall back to a square.
+    ratio_in = PHONE_PHOTO[0] / PHONE_PHOTO[1]
+    ratio_out = width / height
+    check(abs(ratio_in - ratio_out) < 0.05,
+          f"the photo's shape survives ({ratio_out:.2f} against {ratio_in:.2f})")
+
+
+def test_the_cap_is_narrow():
+    print("\nand it caps nothing it does not have to")
+    recipe = cat.get(cat.DEFAULT_RECIPE_ID)
+    # A card that can take the whole frame is left alone.
+    _, _, capped = st.plan_output_size(recipe, BIG, (1024, 768), None)
+    check(capped is None, "a source the machine can manage is not capped")
+    # An explicit choice is the user's, however large.
+    biggest = max(c for c in st.SIZE_CHOICES if c)
+    width, height, capped = st.plan_output_size(recipe, PASCAL, PHONE_PHOTO,
+                                                biggest)
+    check(capped is None,
+          f"an explicit {biggest} px is honoured even on the 4 GB card — "
+          f"the confirmation dialog asks about that one instead")
+    check(max(width, height) == biggest, "and it really is that size")
+    # No source at all means nothing to match.
+    _, _, capped = st.plan_output_size(recipe, PASCAL, None, None)
+    check(capped is None, "with no source image there is nothing to cap")
+
+
 if __name__ == "__main__":
     raise SystemExit(run(
         test_round_trip, test_unknown_keys_are_preserved,
@@ -192,4 +250,6 @@ if __name__ == "__main__":
         test_throughput_uses_the_median_engine_rate,
         test_estimates_use_the_measurement, test_mpx_buckets,
         test_auto_size_never_speculates, test_auto_size_follows_the_measurement,
-        test_auto_size_respects_what_fits))
+        test_auto_size_respects_what_fits,
+        test_fitting_size_finds_the_ceiling, test_match_source_is_capped,
+        test_the_cap_is_narrow))
