@@ -20,25 +20,59 @@ sudo pacman -S --needed pyside6 python-pillow vulkan-icd-loader
 
 ## Why there is no PyTorch
 
-This is the central constraint of the project, not a stylistic preference.
+**Not because it cannot run here.** That was the original claim in this file and
+it was wrong twice over. The correction matters more than the conclusion, so it
+goes first:
 
-The development machine has a **GTX 1050 Ti** — Pascal, compute capability
-`sm_61`. Two independent blockers rule out diffusers, ComfyUI, and everything
-else built on PyTorch:
+```
+$ python3 -m venv venv && venv/bin/pip install torch \
+      --index-url https://download.pytorch.org/whl/cu126
+Successfully installed torch-2.14.0+cu126
 
-1. **PyTorch dropped Pascal.** Support ended after 2.6.0; every build since
-   targets `sm_70` and up. On this card `torch.cuda` is either an
-   unsupported-architecture error or a silent fall back to the CPU.
-2. **This system has only Python 3.14**, for which no PyTorch CUDA wheel exists.
+python         : 3.14.7
+torch          : 2.14.0+cu126
+compiled archs : ['sm_50', 'sm_60', 'sm_70', 'sm_75', 'sm_80', 'sm_86', 'sm_90']
+device         : NVIDIA GeForce GTX 1050 Ti
+capability     : sm_61
+cuda available : True
+fp32 4096x4096 matmul:  72.9 ms  ->  1.89 TFLOPS
+fp16 4096x4096 matmul:  89.6 ms  ->  1.53 TFLOPS
+```
 
-Either one alone would be enough. Working around them would mean pinning
-PyTorch 2.6 with CUDA 12.6 *and* installing a second Python — a stack frozen in
-2025, on a machine whose Python moves with the distribution.
+The GTX 1050 Ti runs PyTorch at about 90% of its 2.1 TFLOPS spec sheet, on
+Python 3.14, today. Two beliefs produced the wrong answer:
 
-[stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp) goes
-through ggml and Vulkan instead. Vulkan does not care what CUDA has deprecated,
-the binaries are 46 MB with no Python at all, and `sd-cli --list-devices` finds
-this card and runs on it.
+1. *"Python 3.14 has no PyTorch CUDA wheels."* True of the **default** index
+   (cu128), which is what a bare `pip install torch` uses. The **cu126** index
+   publishes `cp314` wheels up to 2.14.0.
+2. *"PyTorch dropped Pascal after 2.6.0."* The removal was for the CUDA 12.8 and
+   12.9 builds. cu126 kept `sm_50` and `sm_60`, and `sm_61` not appearing in the
+   arch list is irrelevant: CUDA cubins are binary-compatible *within* a major
+   compute capability, so an `sm_60` binary runs on any `sm_6x` device. No PTX
+   JIT is involved — there are no `compute_*` entries in that list.
+
+   (fp16 being *slower* than fp32 is real, and is Pascal GP107's 1:64
+   half-precision rate. sd.cpp reports the same thing as `fp16: 0`.)
+
+So the real reasons are trade-offs, and you may weigh them differently:
+
+* **Size.** The engine is a 46 MB download. torch plus its CUDA runtime is about
+  10 GB installed — a third of the free space on the development machine.
+* **No virtualenv.** This project's dependency policy, inherited from
+  local-upscaler and soundboard, is system packages only. PyTorch cannot be that
+  here, because Arch's `python-pytorch-cuda` is built against a CUDA too new for
+  this card; it would have to be a venv.
+* **Weight streaming from disk.** `--params-backend diffusion=disk` reads a
+  segment, computes it, and drops it. diffusers offers CPU offload but nothing
+  that streams from disk, and that is what makes `qwen-edit-2509-q2` (13.4 GB)
+  and `flux2-dev-q4` (34.5 GB) attemptable at all on 11 GB of RAM.
+* **It is measured.** The numbers in the README come from this engine actually
+  running. A diffusers port would be a rewrite whose performance on this card is
+  unknown until someone benchmarks it.
+
+None of that makes PyTorch impossible here, and if you want the HuggingFace
+ecosystem — LoRAs, ControlNets, the pipelines — it is a legitimate choice. It is
+just not the one this app made.
 
 ## Hardware
 

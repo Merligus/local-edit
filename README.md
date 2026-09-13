@@ -69,9 +69,11 @@ Arch / CachyOS:
 sudo pacman -S --needed pyside6 python-pillow vulkan-icd-loader
 ```
 
-That is the whole dependency list. There is no `pip install`, no virtualenv, and
-no PyTorch — see [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md) for why that is
-a feature rather than an omission on the hardware this was written for.
+That is the whole dependency list. There is no `pip install`, no virtualenv
+and no PyTorch — as a size and packaging choice, **not** because PyTorch
+cannot run here. It can: `torch 2.14.0+cu126` installs on Python 3.14 and
+reaches 1.89 of this card's 2.1 TFLOPS. docs/COMPATIBILITY.md shows the
+measurement and the trade-offs, including the two things I had wrong about it.
 
 The image engine is [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp),
 a pair of standalone binaries the app fetches for you:

@@ -1,20 +1,31 @@
 """Finding and invoking stable-diffusion.cpp.
 
 The engine is a pair of standalone binaries — `sd-cli` and `sd-server` — driven
-over Vulkan, not a Python library. That is the same choice local-upscaler made
-and for the same reason, which is worth restating because the obvious
-alternative looks so much more natural:
+over Vulkan, not a Python library. That is the same choice local-upscaler made,
+though **not** for the reason first written here.
 
-    The development machine has a GTX 1050 Ti — Pascal, compute capability
-    sm_61. PyTorch dropped Pascal kernels after 2.6.0; every build since targets
-    sm_70 and up, so `torch.cuda` on this card is either an unsupported-arch
-    error or a silent fall back to the CPU. On top of that this system has only
-    Python 3.14, for which no PyTorch CUDA wheel exists at all. Either blocker
-    alone rules out diffusers and ComfyUI.
+The original claim was that PyTorch could not run on this machine at all: that it
+dropped Pascal (`sm_61`) after 2.6.0, and that Python 3.14 had no CUDA wheels.
+Both are false, and measuring them said so:
 
-    ggml goes through Vulkan, which Pascal supports fine, and needs no Python
-    and no CUDA toolkit. `sd-cli --list-devices` on this machine finds the card
-    and runs on it.
+    torch 2.14.0+cu126 on Python 3.14.7
+    compiled archs : ['sm_50', 'sm_60', 'sm_70', 'sm_75', 'sm_80', 'sm_86', 'sm_90']
+    device         : NVIDIA GeForce GTX 1050 Ti  (sm_61)
+    cuda available : True
+    fp32 4096^2 matmul: 1.89 TFLOPS   (the card's spec sheet is ~2.1)
+
+The cu126 index publishes `cp314` wheels; only the default cu128 index does not.
+And `sm_61` being absent from the arch list does not matter, because CUDA cubins
+are binary-compatible *within* a major compute capability — an `sm_60` binary
+runs on any `sm_6x` part, with no PTX JIT involved.
+
+So this is a trade-off, not a necessity, and the honest version is: ggml over
+Vulkan is 46 MB against roughly 10 GB of torch and CUDA runtime, needs no
+virtualenv on a project whose stated policy is system packages only, and has
+per-segment weight streaming from *disk* (`--params-backend diffusion=disk`)
+that diffusers has no equivalent for — which is what lets the 13-34 GB tiers be
+attempted at all on 11 GB of RAM. Those are real advantages. "PyTorch will not
+run here" was not one of them.
 
 It also reports `fp16: 0`, because Pascal has no usable half-precision path
 under Vulkan. Everything runs in fp32, which roughly doubles the working set —
